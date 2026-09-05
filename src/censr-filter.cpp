@@ -5,13 +5,17 @@ SPDX-License-Identifier: GPL-2.0-or-later
 */
 
 /*
- * Two-rate pipeline:
- *   - EVERY FRAME (render thread): draw opaque amber covers over the current
- *     cover set (cheap).
- *   - ~5 Hz (render thread): render the source into a downscaled texrender,
- *     stage it to CPU, and submit to the async detection worker. The worker
- *     (OCR + secret rules + QR) returns cover boxes, which are merged into the
- *     cover set with a TTL so they persist a beat and don't flicker.
+ * Zero-leak pipeline (step 3):
+ *   - Every frame is captured into a GPU ring buffer and displayed ~DELAY later.
+ *   - ~5 Hz the just-captured frame is read back to CPU and sent to the async
+ *     detection worker (OCR + secret rules + QR), which returns cover boxes
+ *     tagged with that frame's timestamp (a "snapshot").
+ *   - When a buffered frame is finally displayed, we draw the snapshot whose
+ *     timestamp matches that frame's era. Because DELAY (~1.5 s) is far larger
+ *     than detection latency (~0.2-0.4 s), detection for the displayed frame has
+ *     always finished before it is shown -> a secret is never displayed
+ *     uncovered, not even for one frame. During the initial buffer fill the
+ *     output is black (also leak-free).
  */
 
 #include <obs-module.h>
@@ -20,6 +24,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -31,172 +36,221 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #define CENSR_FILTER_ID "censr_redaction"
 
+static constexpr uint64_t CENSR_DELAY_NS = 1500000000ull;          /* 1.5 s delay */
 static constexpr uint64_t CENSR_DETECT_INTERVAL_NS = 200000000ull; /* 5 Hz */
-/* Detection runs at native width (capped); downscaling made dense monospace
- * secrets unreadable to Windows OCR. OCR is on the worker thread, so the cost
- * of full-res is fine at 5 Hz. */
-static constexpr uint32_t CENSR_DETECT_WIDTH = 1920;               /* px */
-static constexpr uint64_t CENSR_COVER_TTL_NS = 600000000ull;       /* 600 ms */
+static constexpr uint64_t CENSR_SNAPSHOT_KEEP_NS = 3000000000ull;  /* retain 3 s */
 static constexpr float CENSR_COVER_PAD = 8.0f;                     /* src px */
 
 namespace {
 
-/* A single opaque cover, in source pixel coordinates (origin top-left). */
 struct censr_box {
 	float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
-	uint64_t expire_ns = 0;
+};
+
+/* One buffered source frame (full resolution) in the delay ring. */
+struct FrameSlot {
+	gs_texrender_t *render = nullptr;
+	uint64_t ts = 0;
+	bool has_content = false;
+};
+
+/* Detection result for the frame captured at ts. */
+struct DetectionSnapshot {
+	uint64_t ts = 0;
+	std::vector<censr_box> boxes; /* source pixel space, already padded */
 };
 
 struct censr_filter {
 	obs_source_t *context = nullptr;
-
-	std::mutex boxes_mutex;
-	std::vector<censr_box> boxes;
-
 	std::unique_ptr<censr::Detector> detector;
 
-	/* GPU readback resources (render thread only). */
-	gs_texrender_t *texrender = nullptr;
+	/* Time-stamped detection results. */
+	std::mutex snap_mutex;
+	std::deque<DetectionSnapshot> snapshots;
+
+	/* Delay ring (render thread only). front = oldest. */
+	std::deque<FrameSlot> frames;
+	uint32_t cx = 0, cy = 0;
+	uint64_t interval_ns = 0;
+	bool target_valid = false;
+
+	/* Detection readback. */
 	gs_stagesurf_t *stage = nullptr;
 	uint32_t stage_w = 0, stage_h = 0;
 	uint64_t last_detect_ns = 0;
 
-	uint64_t create_ns = 0;
-	bool first_cover_logged = false;
+	uint64_t last_delaylog_ns = 0;
 };
-
-float iou(const censr_box &a, const censr::RectF &b)
-{
-	float ix = std::max(a.x, b.x);
-	float iy = std::max(a.y, b.y);
-	float ix2 = std::min(a.x + a.w, b.x + b.w);
-	float iy2 = std::min(a.y + a.h, b.y + b.h);
-	float iw = ix2 - ix, ih = iy2 - iy;
-	if (iw <= 0.f || ih <= 0.f)
-		return 0.f;
-	float inter = iw * ih;
-	float uni = a.w * a.h + b.w * b.h - inter;
-	return uni > 0.f ? inter / uni : 0.f;
-}
-
-/* Merge freshly detected source-space boxes into the cover set. Boxes that
- * overlap an existing cover refresh it (and its TTL); new ones are added.
- * Unrefreshed covers simply expire. Runs on the detector worker thread. */
-void apply_detection(censr_filter *filter, const std::vector<censr::RectF> &boxes)
-{
-	uint64_t now = os_gettime_ns();
-	uint64_t expire = now + CENSR_COVER_TTL_NS;
-
-	std::lock_guard<std::mutex> lk(filter->boxes_mutex);
-	for (const auto &nb : boxes) {
-		censr::RectF padded{nb.x - CENSR_COVER_PAD, nb.y - CENSR_COVER_PAD,
-				    nb.w + 2 * CENSR_COVER_PAD,
-				    nb.h + 2 * CENSR_COVER_PAD};
-		if (padded.x < 0)
-			padded.x = 0;
-		if (padded.y < 0)
-			padded.y = 0;
-
-		int best = -1;
-		float best_iou = 0.3f;
-		for (size_t i = 0; i < filter->boxes.size(); ++i) {
-			float v = iou(filter->boxes[i], padded);
-			if (v > best_iou) {
-				best_iou = v;
-				best = (int)i;
-			}
-		}
-		if (best >= 0) {
-			filter->boxes[best] = censr_box{padded.x, padded.y,
-							padded.w, padded.h, expire};
-		} else {
-			filter->boxes.push_back(censr_box{padded.x, padded.y,
-							  padded.w, padded.h,
-							  expire});
-		}
-	}
-
-	if (!filter->first_cover_logged && !boxes.empty()) {
-		filter->first_cover_logged = true;
-		double ms = (double)(now - filter->create_ns) / 1.0e6;
-		obs_log(LOG_INFO,
-			"Censr: first covers placed %.0f ms after filter start (%zu regions)",
-			ms, boxes.size());
-	}
-}
 
 const char *censr_get_name(void *)
 {
 	return "Censr Redaction";
 }
 
-void *censr_create(obs_data_t *settings, obs_source_t *source)
+/* --- detection snapshots ------------------------------------------------- */
+
+void apply_detection(censr_filter *filter, uint64_t ts,
+		     const std::vector<censr::RectF> &boxes)
 {
-	UNUSED_PARAMETER(settings);
-	auto *filter = new censr_filter();
-	filter->context = source;
-	filter->create_ns = os_gettime_ns();
+	DetectionSnapshot snap;
+	snap.ts = ts;
+	for (const auto &nb : boxes) {
+		float x = nb.x - CENSR_COVER_PAD;
+		float y = nb.y - CENSR_COVER_PAD;
+		if (x < 0)
+			x = 0;
+		if (y < 0)
+			y = 0;
+		snap.boxes.push_back(censr_box{x, y, nb.w + 2 * CENSR_COVER_PAD,
+					       nb.h + 2 * CENSR_COVER_PAD});
+	}
 
-	filter->detector = std::make_unique<censr::Detector>(
-		[filter](const std::vector<censr::RectF> &boxes) {
-			apply_detection(filter, boxes);
-		});
-
-	obs_log(LOG_INFO, "Censr Redaction filter created");
-	return filter;
+	uint64_t now = os_gettime_ns();
+	std::lock_guard<std::mutex> lk(filter->snap_mutex);
+	filter->snapshots.push_back(std::move(snap));
+	while (!filter->snapshots.empty() &&
+	       filter->snapshots.front().ts + CENSR_SNAPSHOT_KEEP_NS < now)
+		filter->snapshots.pop_front();
 }
 
-void censr_destroy(void *data)
+/* Covers for the frame captured at display_ts: the snapshot nearest in time. */
+std::vector<censr_box> covers_for(censr_filter *filter, uint64_t display_ts)
+{
+	std::lock_guard<std::mutex> lk(filter->snap_mutex);
+	const DetectionSnapshot *best = nullptr;
+	uint64_t best_dt = UINT64_MAX;
+	for (const auto &s : filter->snapshots) {
+		uint64_t dt = s.ts > display_ts ? s.ts - display_ts
+						: display_ts - s.ts;
+		if (dt < best_dt) {
+			best_dt = dt;
+			best = &s;
+		}
+	}
+	if (best)
+		return best->boxes;
+	return {};
+}
+
+/* --- ring management ----------------------------------------------------- */
+
+void free_frames(censr_filter *filter)
+{
+	obs_enter_graphics();
+	for (auto &f : filter->frames)
+		if (f.render)
+			gs_texrender_destroy(f.render);
+	obs_leave_graphics();
+	filter->frames.clear();
+}
+
+size_t wanted_frames(const censr_filter *filter)
+{
+	return filter->interval_ns ? (size_t)(CENSR_DELAY_NS / filter->interval_ns)
+				   : 0;
+}
+
+void resize_ring(censr_filter *filter)
+{
+	size_t want = wanted_frames(filter);
+	if (want == 0)
+		return;
+	obs_enter_graphics();
+	while (filter->frames.size() < want) {
+		FrameSlot slot;
+		slot.render = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+		filter->frames.push_back(slot);
+	}
+	while (filter->frames.size() > want) {
+		if (filter->frames.front().render)
+			gs_texrender_destroy(filter->frames.front().render);
+		filter->frames.pop_front();
+	}
+	obs_leave_graphics();
+}
+
+/* --- tick: track source size + output fps -------------------------------- */
+
+void censr_video_tick(void *data, float)
 {
 	auto *filter = static_cast<censr_filter *>(data);
 
-	/* Stop the worker first so its callback can't touch us mid-teardown. */
-	filter->detector.reset();
+	obs_source_t *target = obs_filter_get_target(filter->context);
+	uint32_t cx = target ? obs_source_get_base_width(target) : 0;
+	uint32_t cy = target ? obs_source_get_base_height(target) : 0;
+	filter->target_valid = target && cx && cy;
 
-	obs_enter_graphics();
-	if (filter->texrender)
-		gs_texrender_destroy(filter->texrender);
-	if (filter->stage)
-		gs_stagesurface_destroy(filter->stage);
-	obs_leave_graphics();
-
-	obs_log(LOG_INFO, "Censr Redaction filter destroyed");
-	delete filter;
-}
-
-void expire_boxes(censr_filter *filter, uint64_t now_ns)
-{
-	std::lock_guard<std::mutex> lk(filter->boxes_mutex);
-	auto &v = filter->boxes;
-	v.erase(std::remove_if(v.begin(), v.end(),
-				[now_ns](const censr_box &b) {
-					return b.expire_ns != 0 && b.expire_ns <= now_ns;
-				}),
-		v.end());
-}
-
-/* Draw every cover as a fully opaque amber rectangle (blending disabled so it
- * overwrites the pixels underneath). */
-void draw_covers(censr_filter *filter)
-{
-	std::vector<censr_box> boxes;
-	{
-		std::lock_guard<std::mutex> lk(filter->boxes_mutex);
-		boxes = filter->boxes;
+	if (filter->target_valid && (cx != filter->cx || cy != filter->cy)) {
+		filter->cx = cx;
+		filter->cy = cy;
+		free_frames(filter);
+		if (filter->stage) {
+			obs_enter_graphics();
+			gs_stagesurface_destroy(filter->stage);
+			obs_leave_graphics();
+			filter->stage = nullptr;
+			filter->stage_w = filter->stage_h = 0;
+		}
 	}
+
+	struct obs_video_info ovi = {};
+	if (obs_get_video_info(&ovi) && ovi.fps_num) {
+		uint64_t interval =
+			(uint64_t)ovi.fps_den * 1000000000ull / ovi.fps_num;
+		if (interval != filter->interval_ns) {
+			filter->interval_ns = interval;
+			if (filter->target_valid)
+				resize_ring(filter);
+		}
+	}
+	if (filter->target_valid && filter->frames.empty())
+		resize_ring(filter);
+}
+
+/* --- drawing ------------------------------------------------------------- */
+
+void draw_black(uint32_t cx, uint32_t cy)
+{
+	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+	gs_eparam_t *color = gs_effect_get_param_by_name(solid, "color");
+	struct vec4 black;
+	vec4_set(&black, 0.f, 0.f, 0.f, 1.f);
+	gs_effect_set_vec4(color, &black);
+	gs_blend_state_push();
+	gs_enable_blending(false);
+	while (gs_effect_loop(solid, "Solid"))
+		gs_draw_sprite(nullptr, 0, cx, cy);
+	gs_blend_state_pop();
+}
+
+void draw_delayed_frame(FrameSlot &f, uint32_t cx, uint32_t cy)
+{
+	gs_texture_t *tex = gs_texrender_get_texture(f.render);
+	if (!tex) {
+		draw_black(cx, cy);
+		return;
+	}
+	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	const bool prev = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(true);
+	gs_effect_set_texture_srgb(gs_effect_get_param_by_name(effect, "image"), tex);
+	while (gs_effect_loop(effect, "Draw"))
+		gs_draw_sprite(tex, 0, cx, cy);
+	gs_enable_framebuffer_srgb(prev);
+}
+
+void draw_covers(const std::vector<censr_box> &boxes)
+{
 	if (boxes.empty())
 		return;
-
 	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
-	gs_eparam_t *color_param = gs_effect_get_param_by_name(solid, "color");
-
+	gs_eparam_t *color = gs_effect_get_param_by_name(solid, "color");
 	struct vec4 amber;
 	vec4_set(&amber, 1.0f, 0.749f, 0.0f, 1.0f);
-	gs_effect_set_vec4(color_param, &amber);
+	gs_effect_set_vec4(color, &amber);
 
 	gs_blend_state_push();
 	gs_enable_blending(false);
-
 	while (gs_effect_loop(solid, "Solid")) {
 		for (const auto &b : boxes) {
 			gs_matrix_push();
@@ -205,66 +259,49 @@ void draw_covers(censr_filter *filter)
 			gs_matrix_pop();
 		}
 	}
-
 	gs_blend_state_pop();
 }
 
-/* ~5 Hz: render the source into a downscaled texrender, stage to CPU, submit to
- * the detector. Runs on the render thread. */
-void do_readback(censr_filter *filter)
+/* --- capture (into ring) + readback (for detection) ---------------------- */
+
+void capture_into(censr_filter *filter, FrameSlot &slot, obs_source_t *target,
+		  obs_source_t *parent, uint64_t now)
 {
-	obs_source_t *target = obs_filter_get_target(filter->context);
-	obs_source_t *parent = obs_filter_get_parent(filter->context);
-	if (!target || !parent)
-		return;
-	uint32_t sw = obs_source_get_base_width(target);
-	uint32_t sh = obs_source_get_base_height(target);
-	if (sw == 0 || sh == 0)
-		return;
-
-	uint32_t tw = std::min<uint32_t>(CENSR_DETECT_WIDTH, sw);
-	uint32_t th = (uint32_t)((uint64_t)sh * tw / sw);
-	if (th == 0)
-		th = 1;
-
-	if (!filter->texrender)
-		filter->texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-	if (!filter->stage || filter->stage_w != tw || filter->stage_h != th) {
-		if (filter->stage)
-			gs_stagesurface_destroy(filter->stage);
-		filter->stage = gs_stagesurface_create(tw, th, GS_RGBA);
-		filter->stage_w = tw;
-		filter->stage_h = th;
-	}
-
-	gs_texrender_reset(filter->texrender);
-
+	gs_texrender_reset(slot.render);
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
-
-	if (!gs_texrender_begin(filter->texrender, tw, th)) {
-		gs_blend_state_pop();
-		return;
+	if (gs_texrender_begin(slot.render, filter->cx, filter->cy)) {
+		uint32_t flags = obs_source_get_output_flags(target);
+		bool custom_draw = (flags & OBS_SOURCE_CUSTOM_DRAW) != 0;
+		bool async = (flags & OBS_SOURCE_ASYNC) != 0;
+		struct vec4 clear;
+		vec4_zero(&clear);
+		gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+		gs_ortho(0.0f, (float)filter->cx, 0.0f, (float)filter->cy, -100.0f,
+			 100.0f);
+		if (target == parent && !custom_draw && !async)
+			obs_source_default_render(target);
+		else
+			obs_source_video_render(target);
+		gs_texrender_end(slot.render);
+		slot.ts = now;
+		slot.has_content = true;
 	}
-
-	uint32_t flags = obs_source_get_output_flags(target);
-	bool custom_draw = (flags & OBS_SOURCE_CUSTOM_DRAW) != 0;
-	bool async = (flags & OBS_SOURCE_ASYNC) != 0;
-
-	struct vec4 clear;
-	vec4_zero(&clear);
-	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
-	gs_ortho(0.0f, (float)sw, 0.0f, (float)sh, -100.0f, 100.0f);
-
-	if (target == parent && !custom_draw && !async)
-		obs_source_default_render(target);
-	else
-		obs_source_video_render(target);
-
-	gs_texrender_end(filter->texrender);
 	gs_blend_state_pop();
+}
 
-	gs_texture_t *tex = gs_texrender_get_texture(filter->texrender);
+void readback_for_detection(censr_filter *filter, FrameSlot &slot, uint64_t now)
+{
+	if (!filter->stage || filter->stage_w != filter->cx ||
+	    filter->stage_h != filter->cy) {
+		if (filter->stage)
+			gs_stagesurface_destroy(filter->stage);
+		filter->stage =
+			gs_stagesurface_create(filter->cx, filter->cy, GS_RGBA);
+		filter->stage_w = filter->cx;
+		filter->stage_h = filter->cy;
+	}
+	gs_texture_t *tex = gs_texrender_get_texture(slot.render);
 	if (!tex)
 		return;
 	gs_stage_texture(filter->stage, tex);
@@ -272,34 +309,99 @@ void do_readback(censr_filter *filter)
 	uint8_t *ptr = nullptr;
 	uint32_t linesize = 0;
 	if (gs_stagesurface_map(filter->stage, &ptr, &linesize)) {
-		std::vector<uint8_t> buf((size_t)tw * th * 4);
-		for (uint32_t y = 0; y < th; ++y)
-			memcpy(buf.data() + (size_t)y * tw * 4,
-			       ptr + (size_t)y * linesize, (size_t)tw * 4);
+		std::vector<uint8_t> buf((size_t)filter->cx * filter->cy * 4);
+		for (uint32_t y = 0; y < filter->cy; ++y)
+			memcpy(buf.data() + (size_t)y * filter->cx * 4,
+			       ptr + (size_t)y * linesize, (size_t)filter->cx * 4);
 		gs_stagesurface_unmap(filter->stage);
-
 		if (filter->detector)
-			filter->detector->submit(std::move(buf), (int)tw,
-						 (int)th, (int)sw, (int)sh);
+			filter->detector->submit(std::move(buf), (int)filter->cx,
+						 (int)filter->cy, (int)filter->cx,
+						 (int)filter->cy, now);
 	}
 }
+
+/* --- main render --------------------------------------------------------- */
 
 void censr_video_render(void *data, gs_effect_t *effect)
 {
 	auto *filter = static_cast<censr_filter *>(data);
+	UNUSED_PARAMETER(effect);
 
-	obs_source_skip_video_filter(filter->context);
+	obs_source_t *target = obs_filter_get_target(filter->context);
+	obs_source_t *parent = obs_filter_get_parent(filter->context);
 
-	uint64_t now = os_gettime_ns();
-	if (now - filter->last_detect_ns >= CENSR_DETECT_INTERVAL_NS) {
-		filter->last_detect_ns = now;
-		do_readback(filter);
+	if (!filter->target_valid || !target || !parent || filter->frames.empty()) {
+		obs_source_skip_video_filter(filter->context);
+		return;
 	}
 
-	expire_boxes(filter, now);
-	draw_covers(filter);
+	uint64_t now = os_gettime_ns();
 
-	UNUSED_PARAMETER(effect);
+	/* Recycle the oldest slot, capture the current source into it, and move
+	 * it to the back of the ring. */
+	FrameSlot slot = filter->frames.front();
+	filter->frames.pop_front();
+	capture_into(filter, slot, target, parent, now);
+	filter->frames.push_back(slot);
+
+	/* ~5 Hz: read back the just-captured frame for detection. */
+	if (now - filter->last_detect_ns >= CENSR_DETECT_INTERVAL_NS) {
+		filter->last_detect_ns = now;
+		readback_for_detection(filter, filter->frames.back(), now);
+	}
+
+	/* Display the oldest frame (~DELAY old) with its era's covers. */
+	FrameSlot &disp = filter->frames.front();
+	if (disp.has_content) {
+		draw_delayed_frame(disp, filter->cx, filter->cy);
+		draw_covers(covers_for(filter, disp.ts));
+	} else {
+		draw_black(filter->cx, filter->cy); /* buffer still filling */
+	}
+
+	if (now - filter->last_delaylog_ns >= 5000000000ull) {
+		filter->last_delaylog_ns = now;
+		if (disp.has_content)
+			obs_log(LOG_INFO,
+				"Censr: zero-leak buffer active, showing frame %.0f ms old (%zu frames)",
+				(double)(now - disp.ts) / 1.0e6, filter->frames.size());
+	}
+}
+
+/* --- lifecycle ----------------------------------------------------------- */
+
+void *censr_create(obs_data_t *settings, obs_source_t *source)
+{
+	UNUSED_PARAMETER(settings);
+	auto *filter = new censr_filter();
+	filter->context = source;
+
+	filter->detector = std::make_unique<censr::Detector>(
+		[filter](uint64_t ts, const std::vector<censr::RectF> &boxes) {
+			apply_detection(filter, ts, boxes);
+		});
+
+	obs_log(LOG_INFO, "Censr Redaction filter created (zero-leak, %.1fs delay)",
+		(double)CENSR_DELAY_NS / 1.0e9);
+	return filter;
+}
+
+void censr_destroy(void *data)
+{
+	auto *filter = static_cast<censr_filter *>(data);
+
+	filter->detector.reset();
+
+	free_frames(filter);
+	if (filter->stage) {
+		obs_enter_graphics();
+		gs_stagesurface_destroy(filter->stage);
+		obs_leave_graphics();
+	}
+
+	obs_log(LOG_INFO, "Censr Redaction filter destroyed");
+	delete filter;
 }
 
 obs_source_info make_censr_filter_info()
@@ -312,6 +414,7 @@ obs_source_info make_censr_filter_info()
 	info.create = censr_create;
 	info.destroy = censr_destroy;
 	info.video_render = censr_video_render;
+	info.video_tick = censr_video_tick;
 	return info;
 }
 

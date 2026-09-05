@@ -82,7 +82,8 @@ Detector::~Detector()
 		thread_.join();
 }
 
-void Detector::submit(std::vector<uint8_t> rgba, int w, int h, int src_w, int src_h)
+void Detector::submit(std::vector<uint8_t> rgba, int w, int h, int src_w, int src_h,
+		      uint64_t ts)
 {
 	{
 		std::lock_guard<std::mutex> lk(mutex_);
@@ -91,6 +92,7 @@ void Detector::submit(std::vector<uint8_t> rgba, int w, int h, int src_w, int sr
 		pending_.h = h;
 		pending_.src_w = src_w;
 		pending_.src_h = src_h;
+		pending_.ts = ts;
 		has_pending_ = true;
 	}
 	cv_.notify_one();
@@ -171,7 +173,7 @@ void Detector::run()
 			src_boxes.push_back({b.x * sx, b.y * sy, b.w * sx, b.h * sy});
 
 		if (cb_)
-			cb_(src_boxes);
+			cb_(frame.ts, src_boxes);
 	}
 
 	ocr_.reset();

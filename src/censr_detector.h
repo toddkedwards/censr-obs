@@ -25,18 +25,23 @@ namespace censr {
  */
 class Detector {
 public:
-	using CoverCallback = std::function<void(const std::vector<RectF> &source_boxes)>;
+	/* ts identifies the source frame the boxes were computed from, so the
+	 * zero-leak buffer can match covers to the delayed frame's era. */
+	using CoverCallback =
+		std::function<void(uint64_t ts, const std::vector<RectF> &source_boxes)>;
 
 	explicit Detector(CoverCallback cb);
 	~Detector();
 
 	/* Called on the render thread. rgba is tightly packed (w*4 stride). */
-	void submit(std::vector<uint8_t> rgba, int w, int h, int src_w, int src_h);
+	void submit(std::vector<uint8_t> rgba, int w, int h, int src_w, int src_h,
+		    uint64_t ts);
 
 private:
 	struct Frame {
 		std::vector<uint8_t> rgba;
 		int w = 0, h = 0, src_w = 0, src_h = 0;
+		uint64_t ts = 0;
 	};
 
 	void run();

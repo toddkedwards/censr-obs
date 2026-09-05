@@ -22,14 +22,21 @@ On a 1080p OBS source, add the **Censr Redaction** filter to any source and:
 
 ![Censr covering secrets on a 1080p source](docs/demo.png)
 
-## Architecture — a two-rate pipeline
+## Architecture — a two-rate pipeline + zero-leak buffer
 
-- **Every frame (render thread, cheap):** draw opaque amber rectangles over the
-  current *cover set* using OBS's graphics API, with blending disabled so covers
-  truly overwrite the pixels underneath.
-- **~5 Hz (async worker thread):** render the source into a texrender, stage it to
-  CPU, then run OCR + secret-regex + QR detection to update the cover set. Each
-  cover has a time-to-live so it persists a beat and doesn't flicker.
+- **Every frame (render thread):** capture the source into a GPU ring buffer and
+  display the frame from ~1.5 s ago, drawing opaque amber rectangles over it
+  (blending disabled so covers truly overwrite the pixels underneath).
+- **~5 Hz (async worker thread):** read a captured frame back to CPU and run
+  OCR + secret-regex + QR detection, producing cover boxes tagged with that
+  frame's timestamp.
+- **Zero-leak guarantee:** because output is delayed ~1.5 s — far longer than
+  detection latency (~0.2–0.4 s) — every displayed frame's content has already
+  been processed, and its covers are drawn from the matching-era detection. A
+  secret is never shown uncovered, not even for one frame (during the initial
+  buffer fill the output is black, also leak-free). Verified with a transition
+  test: switching a live source to secret content, the secrets appear in the
+  delayed output already covered.
 
 Components (`src/`):
 
@@ -87,11 +94,11 @@ and `tools/make_fixture.py` (generates a 1080p fixture with **fake** secrets).
 
 ## Roadmap
 
-- **Step 3 (zero-leak):** a 1–2 s frame-delay buffer so a frame is only shown after
-  its detection has finished.
 - **GPU OCR:** swap `ICensrOcr` for a PaddleOCR/ONNX engine on the GPU for much
   higher accuracy on dense/random tokens than `Windows.Media.Ocr`.
 - Rounded-corner covers; per-word (vs per-line) redaction granularity.
+- Filter properties UI (toggle rules, adjust delay / cover color); motion-tracking
+  stress test.
 
 ## License
 
