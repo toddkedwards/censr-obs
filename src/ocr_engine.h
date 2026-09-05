@@ -44,4 +44,8 @@ struct ICensrOcr {
  * Call on a thread that has already initialized a WinRT apartment. */
 std::unique_ptr<ICensrOcr> create_winrt_ocr();
 
+/* Creates the macOS Vision (VNRecognizeTextRequest) engine. Returns nullptr if
+ * unavailable. No apartment/threading setup required. */
+std::unique_ptr<ICensrOcr> create_vision_ocr();
+
 } // namespace censr

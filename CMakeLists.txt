@@ -40,10 +40,22 @@ target_sources(
     src/plugin-main.c
     src/censr-filter.cpp
     src/censr_detector.cpp
-    src/ocr_winrt.cpp
     src/secret_rules.cpp
     src/qr_zxing.cpp
 )
+
+# Platform OCR backend: Windows.Media.Ocr on Windows, Vision on macOS. Both
+# implement ICensrOcr; the rest of the pipeline is platform-neutral.
+if(WIN32)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/ocr_winrt.cpp)
+elseif(APPLE)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/ocr_vision.mm)
+  set_source_files_properties(src/ocr_vision.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  target_link_libraries(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE "-framework Vision" "-framework CoreGraphics" "-framework Foundation"
+  )
+endif()
 
 set_target_properties(
   ${CMAKE_PROJECT_NAME}
@@ -52,19 +64,21 @@ set_target_properties(
     CXX_STANDARD_REQUIRED ON
 )
 
-# --- C++/WinRT (Windows.Media.Ocr) ---
-# The projection headers ship with the Windows SDK under Include/<ver>/cppwinrt.
-file(GLOB _censr_cppwinrt_dirs "C:/Program Files (x86)/Windows Kits/10/Include/*/cppwinrt")
-list(SORT _censr_cppwinrt_dirs)
-list(REVERSE _censr_cppwinrt_dirs)
-if(_censr_cppwinrt_dirs)
-  list(GET _censr_cppwinrt_dirs 0 _censr_cppwinrt)
-  target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${_censr_cppwinrt}")
-  message(STATUS "Censr: C++/WinRT headers at ${_censr_cppwinrt}")
-else()
-  message(FATAL_ERROR "Censr: could not find C++/WinRT (cppwinrt) headers in the Windows SDK")
+# --- C++/WinRT (Windows.Media.Ocr) — Windows only ---
+if(WIN32)
+  # The projection headers ship with the Windows SDK under Include/<ver>/cppwinrt.
+  file(GLOB _censr_cppwinrt_dirs "C:/Program Files (x86)/Windows Kits/10/Include/*/cppwinrt")
+  list(SORT _censr_cppwinrt_dirs)
+  list(REVERSE _censr_cppwinrt_dirs)
+  if(_censr_cppwinrt_dirs)
+    list(GET _censr_cppwinrt_dirs 0 _censr_cppwinrt)
+    target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${_censr_cppwinrt}")
+    message(STATUS "Censr: C++/WinRT headers at ${_censr_cppwinrt}")
+  else()
+    message(FATAL_ERROR "Censr: could not find C++/WinRT (cppwinrt) headers in the Windows SDK")
+  endif()
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE WindowsApp)
 endif()
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE WindowsApp)
 
 # --- ZXing-cpp (QR / barcode detection) via FetchContent ---
 include(FetchContent)
@@ -84,8 +98,22 @@ FetchContent_Declare(
 # warning-clean under MSVC, so build it without /WX.
 set(_censr_saved_wae ${CMAKE_COMPILE_WARNING_AS_ERROR})
 set(CMAKE_COMPILE_WARNING_AS_ERROR OFF)
+# Link ZXing statically into the plugin. On macOS a shared ZXing builds as a dylib
+# whose symbols are hidden (undefined at link); a static lib pulls them in, and it
+# matches how the Windows build links ZXing — no extra dylib to ship either.
+set(_censr_saved_shared ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF)
 FetchContent_MakeAvailable(ZXing)
+set(BUILD_SHARED_LIBS ${_censr_saved_shared})
 set(CMAKE_COMPILE_WARNING_AS_ERROR ${_censr_saved_wae})
+# ZXing isn't warning-clean; under the Xcode generator the WARNING_AS_ERROR toggle
+# above doesn't reach its targets, so silence it on the target itself.
+if(TARGET ZXing)
+  set_target_properties(ZXing PROPERTIES COMPILE_WARNING_AS_ERROR OFF)
+  if(APPLE)
+    target_compile_options(ZXing PRIVATE -Wno-shorten-64-to-32 -Wno-error)
+  endif()
+endif()
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ZXing::ZXing)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

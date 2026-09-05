@@ -11,7 +11,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "qr_zxing.h"
 #include "plugin-support.h"
 
+#ifdef _WIN32
 #include <winrt/Windows.Foundation.h>
+#endif
 
 #include <algorithm>
 
@@ -98,8 +100,12 @@ void Detector::submit(std::vector<uint8_t> rgba, int w, int h, int src_w, int sr
 
 void Detector::run()
 {
+#ifdef _WIN32
 	winrt::init_apartment(winrt::apartment_type::multi_threaded);
 	ocr_ = create_winrt_ocr();
+#else
+	ocr_ = create_vision_ocr();
+#endif
 	if (!ocr_)
 		obs_log(LOG_WARNING, "Censr detector: OCR unavailable, text redaction disabled");
 
@@ -175,7 +181,9 @@ void Detector::run()
 	}
 
 	ocr_.reset();
+#ifdef _WIN32
 	winrt::uninit_apartment();
+#endif
 }
 
 } // namespace censr
