@@ -377,10 +377,25 @@ void *censr_create(obs_data_t *settings, obs_source_t *source)
 	auto *filter = new censr_filter();
 	filter->context = source;
 
+	/* Resolve the GPU OCR model paths in the plugin data dir (empty if not
+	 * bundled -> the detector falls back to Windows OCR). */
+	std::string det_model, rec_model;
+	char *dp = obs_module_file("models/ch_PP-OCRv4_det_infer.onnx");
+	char *rp = obs_module_file("models/ch_PP-OCRv4_rec_infer.onnx");
+	if (dp) {
+		det_model = dp;
+		bfree(dp);
+	}
+	if (rp) {
+		rec_model = rp;
+		bfree(rp);
+	}
+
 	filter->detector = std::make_unique<censr::Detector>(
 		[filter](uint64_t ts, const std::vector<censr::RectF> &boxes) {
 			apply_detection(filter, ts, boxes);
-		});
+		},
+		det_model, rec_model);
 
 	obs_log(LOG_INFO, "Censr Redaction filter created (zero-leak, %.1fs delay)",
 		(double)CENSR_DELAY_NS / 1.0e9);

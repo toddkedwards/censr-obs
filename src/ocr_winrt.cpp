@@ -43,10 +43,27 @@ public:
 			return out;
 
 		try {
+			/* Binarize (crisp black-on-white) — Windows OCR is far
+			 * more confident on dense/random tokens this way. */
+			std::vector<uint8_t> bin((size_t)w * h * 4);
+			for (int y = 0; y < h; ++y)
+				for (int x = 0; x < w; ++x) {
+					const uint8_t *s =
+						bgra + (size_t)y * stride + x * 4;
+					int gray = (s[2] * 299 + s[1] * 587 +
+						    s[0] * 114) /
+						   1000;
+					uint8_t v = (gray >= 110) ? 0 : 255;
+					uint8_t *d = bin.data() +
+						     ((size_t)y * w + x) * 4;
+					d[0] = d[1] = d[2] = v;
+					d[3] = 255;
+				}
+
 			/* Build a tightly-packed BGRA8 IBuffer, then a bitmap. */
 			IBuffer buffer = CryptographicBuffer::CreateFromByteArray(
 				winrt::array_view<uint8_t const>(
-					bgra, bgra + (size_t)stride * h));
+					bin.data(), bin.data() + bin.size()));
 			SoftwareBitmap bitmap = SoftwareBitmap::CreateCopyFromBuffer(
 				buffer, BitmapPixelFormat::Bgra8, w, h);
 

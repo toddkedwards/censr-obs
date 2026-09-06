@@ -30,7 +30,9 @@ public:
 	using CoverCallback =
 		std::function<void(uint64_t ts, const std::vector<RectF> &source_boxes)>;
 
-	explicit Detector(CoverCallback cb);
+	/* Model paths select the ONNX (GPU) engine; empty -> Windows OCR.
+	 * The CENSR_OCR env var ("onnx"/"winrt") overrides the choice. */
+	Detector(CoverCallback cb, std::string det_model, std::string rec_model);
 	~Detector();
 
 	/* Called on the render thread. rgba is tightly packed (w*4 stride). */
@@ -48,6 +50,7 @@ private:
 
 	CoverCallback cb_;
 	std::unique_ptr<ICensrOcr> ocr_;
+	std::string det_model_, rec_model_;
 
 	std::thread thread_;
 	std::mutex mutex_;

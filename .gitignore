@@ -23,6 +23,10 @@
 __pycache__/
 *.pyc
 
+# GPU OCR large binaries — run tools/fetch_gpu_ocr.py to obtain them
+/data/models/*.onnx
+/third_party/
+
 # Exclude lock files
 *.lock.json
 

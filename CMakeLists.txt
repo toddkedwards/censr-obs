@@ -41,6 +41,7 @@ target_sources(
     src/censr-filter.cpp
     src/censr_detector.cpp
     src/ocr_winrt.cpp
+    src/onnx_ocr.cpp
     src/secret_rules.cpp
     src/qr_zxing.cpp
 )
@@ -87,5 +88,17 @@ set(CMAKE_COMPILE_WARNING_AS_ERROR OFF)
 FetchContent_MakeAvailable(ZXing)
 set(CMAKE_COMPILE_WARNING_AS_ERROR ${_censr_saved_wae})
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ZXing::ZXing)
+
+# --- ONNX Runtime (DirectML) for GPU OCR ---
+set(CENSR_ORT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ort-directml")
+if(EXISTS "${CENSR_ORT_DIR}/build/native/include/onnxruntime_cxx_api.h")
+  target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+    "${CENSR_ORT_DIR}/build/native/include")
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
+    "${CENSR_ORT_DIR}/runtimes/win-x64/native/onnxruntime.lib")
+  message(STATUS "Censr: ONNX Runtime (DirectML) at ${CENSR_ORT_DIR}")
+else()
+  message(FATAL_ERROR "Censr: ONNX Runtime not found at ${CENSR_ORT_DIR} (see third_party)")
+endif()
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

@@ -44,4 +44,9 @@ struct ICensrOcr {
  * Call on a thread that has already initialized a WinRT apartment. */
 std::unique_ptr<ICensrOcr> create_winrt_ocr();
 
+/* Creates the ONNX Runtime (DirectML) PP-OCR engine from model file paths.
+ * Returns nullptr if the models can't be loaded or the GPU EP is unavailable. */
+std::unique_ptr<ICensrOcr> create_onnx_ocr(const std::string &det_model,
+					   const std::string &rec_model);
+
 } // namespace censr

@@ -6,6 +6,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "secret_rules.h"
 
+#include <cctype>
 #include <cmath>
 #include <regex>
 #include <string>
@@ -117,9 +118,21 @@ bool line_is_secret(const OcrLine &line)
 	    (std::regex_search(t, assignment_re()) ||
 	     std::regex_search(t, upper_ident_re())))
 		return true;
-	for (const auto &word : line.words) {
-		if (is_high_entropy_token(word.text))
-			return true;
+	/* High-entropy check on whitespace-separated tokens (not the whole
+	 * line — the GPU engine returns a line as one "word", which would make
+	 * ordinary long prose lines look high-entropy). */
+	{
+		size_t i = 0, n = t.size();
+		while (i < n) {
+			while (i < n && std::isspace((unsigned char)t[i]))
+				++i;
+			size_t j = i;
+			while (j < n && !std::isspace((unsigned char)t[j]))
+				++j;
+			if (j > i && is_high_entropy_token(t.substr(i, j - i)))
+				return true;
+			i = j;
+		}
 	}
 	return false;
 }

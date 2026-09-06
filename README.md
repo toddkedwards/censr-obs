@@ -18,7 +18,10 @@ On a 1080p OBS source, add the **Censr Redaction** filter to any source and:
   lines, emails, and QR codes are covered with an opaque amber fill;
 - innocuous text is left visible (no false positives on prose);
 - first covers land **~160 ms** after content appears (< 500 ms target);
-- OBS holds a steady **30 fps** with 0 dropped frames.
+- OBS holds a steady **30 fps** with 0 dropped frames;
+- OCR runs on the **GPU** (PP-OCRv4 via ONNX Runtime + DirectML), with a
+  `Windows.Media.Ocr` fallback;
+- a **1.5 s zero-leak delay buffer** guarantees a secret is never shown uncovered.
 
 ![Censr covering secrets on a 1080p source](docs/demo.png)
 
@@ -44,17 +47,29 @@ Components (`src/`):
 |------|------|
 | `censr-filter.cpp` | OBS filter: per-frame cover draw, GPU readback, cover set + TTL |
 | `censr_detector.*` | Async detection worker (latest-frame-wins) |
-| `ocr_engine.h` | `ICensrOcr` interface — swap point for a future GPU OCR engine |
-| `ocr_winrt.cpp` | OCR via `Windows.Media.Ocr` (C++/WinRT, no bundled model) |
+| `ocr_engine.h` | `ICensrOcr` interface (engine swap point) |
+| `onnx_ocr.cpp` | **GPU OCR** — PP-OCRv4 (DBNet + CRNN) on ONNX Runtime + DirectML |
+| `ocr_winrt.cpp` | Fallback OCR via `Windows.Media.Ocr` (C++/WinRT) |
 | `secret_rules.*` | Data-driven secret patterns (keys, labels, emails, entropy) |
 | `qr_zxing.cpp` | QR / barcode detection via [ZXing-cpp](https://github.com/zxing-cpp/zxing-cpp) |
+
+OCR engine is selected at runtime: the GPU engine (ONNX/DirectML, runs on any
+DX12 GPU) is used when the models are present, falling back to Windows OCR. Set
+`CENSR_OCR=winrt` or `CENSR_OCR=onnx` to force one.
 
 ## Building (Windows)
 
 **Prerequisites:** Visual Studio 2022 with the *Desktop development with C++*
 workload (brings MSVC + the Windows SDK, which supplies the C++/WinRT headers),
-CMake ≥ 3.28, and OBS Studio (to load/test). ZXing-cpp is fetched automatically by
-CMake.
+CMake ≥ 3.28, Python 3 (for the fetch/verify scripts), and OBS Studio (to
+load/test). ZXing-cpp is fetched automatically by CMake.
+
+**Fetch the GPU-OCR dependencies first** (PP-OCR models + ONNX Runtime/DirectML —
+large binaries kept out of git):
+
+```bash
+python tools/fetch_gpu_ocr.py
+```
 
 The template's Windows preset pins the SDK to `10.0.22621`. If you have a different
 SDK, add a `CMakeUserPresets.json` (git-ignored) that retargets it:
@@ -94,11 +109,10 @@ and `tools/make_fixture.py` (generates a 1080p fixture with **fake** secrets).
 
 ## Roadmap
 
-- **GPU OCR:** swap `ICensrOcr` for a PaddleOCR/ONNX engine on the GPU for much
-  higher accuracy on dense/random tokens than `Windows.Media.Ocr`.
 - Rounded-corner covers; per-word (vs per-line) redaction granularity.
 - Filter properties UI (toggle rules, adjust delay / cover color); motion-tracking
   stress test.
+- Optional CUDA/TensorRT execution provider for the OCR models.
 
 ## License
 
