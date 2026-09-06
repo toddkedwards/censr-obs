@@ -188,7 +188,7 @@ public:
 		chars_.push_back(" "); /* trailing space class */
 
 		obs_log(LOG_INFO,
-			"Censr: ONNX PP-OCRv4 (DirectML) ready, %zu character classes",
+			"Censr: ONNX PP-OCRv4 ready, %zu character classes",
 			chars_.size());
 	}
 
