@@ -99,7 +99,7 @@ a cleaner story for the paid Lemon Squeezy SKU than the plugin.
 | Phase | Deliverable | Risk |
 |---|---|---|
 | **0 ✅** | Extract `censr-core` static lib; OBS plugin links it (no behavior change) — **done** | low |
-| **1** | `censr-host` MVP: WGC capture → detect → D3D11 cover composite → **preview window** (no vcam). Proves the engine runs outside OBS. | low–med |
+| **1 ✅** | `censr-host` MVP: WGC capture → detect → D3D11 cover composite → **preview window** (no vcam). Proves the engine runs outside OBS — **done** | low–med |
 | **2** | Shared-mem ring + **DirectShow** vcam reading it; signed installer that registers it. *This is the "works with everyone" milestone.* | **high** (device reg, signing, cross-app testing) |
 | **3** | **MF** virtual camera variant + MSIX for modern Win11 apps | high |
 | **4** | Tray UI / config parity with the filter (rules, delay, color, per-word, engine) + source picker (which monitor/window/cam) | med |
@@ -108,6 +108,26 @@ a cleaner story for the paid Lemon Squeezy SKU than the plugin.
 Phases 0–1 are mostly mechanical given the decoupled core. **Phase 2 is the real
 project** — a signed, registered system camera device tested across the target apps —
 and is where the bulk of the schedule and risk sits.
+
+### Phase 1 as built
+
+`src/host/` — an opt-in target (`-DCENSR_BUILD_HOST=ON`, then run `censr-host.exe`):
+
+- `wgc_capture.{h,cpp}` — Windows.Graphics.Capture of a monitor, poll-based
+  (`CreateFreeThreaded` + `TryGetNextFrame`) so all D3D11 immediate-context work
+  stays on the render thread.
+- `censr_host.cpp` — a D3D11 device + swapchain preview window; a delay ring of
+  GPU textures; the shared `censr::Detector` (Windows.Media.Ocr for the MVP, so no
+  ORT DLLs are required to run); and the same **two-rate + fail-closed** cover
+  logic as the OBS filter (union covers within one detect cadence, black until
+  detection reaches a frame's era). Covers are opaque amber solid rects drawn in
+  D3D11.
+
+Verified: launches, captures the primary monitor, initializes the detector, and
+runs the capture→detect→composite loop without OBS. Known MVP limitations (Phase 2+
+work): captures/OCRs at full monitor resolution (should downscale detection input);
+solid rects, not the rounded SDF covers; captures the primary monitor only (no
+window/source picker); and it previews rather than exposing a virtual camera.
 
 ## Open questions to settle before Phase 2
 

@@ -116,6 +116,27 @@ if(WIN32)
     message(FATAL_ERROR "Censr: could not find C++/WinRT (cppwinrt) headers in the Windows SDK")
   endif()
   target_link_libraries(censr-core PRIVATE WindowsApp)
+
+  # --- Standalone host (Phase 1 MVP): WGC capture + censr-core + D3D11 ------
+  # Opt-in; not part of the plugin build/package. See docs/roadmap-standalone-vcam.md.
+  option(CENSR_BUILD_HOST "Build the standalone virtual-camera host (Phase 1 MVP)" OFF)
+  if(CENSR_BUILD_HOST)
+    add_executable(
+      censr-host
+      src/host/censr_host.cpp
+      src/host/wgc_capture.cpp
+    )
+    target_link_libraries(
+      censr-host PRIVATE censr-core d3d11 dxgi dxguid d3dcompiler WindowsApp
+    )
+    target_include_directories(
+      censr-host PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${_censr_cppwinrt}"
+    )
+    target_compile_definitions(censr-host PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    set_target_properties(
+      censr-host PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
+    )
+  endif()
 endif()
 
 # --- ZXing-cpp (QR / barcode detection) via FetchContent ---
@@ -200,6 +221,17 @@ add_custom_command(
     "${CMAKE_CURRENT_BINARY_DIR}/rundir/$<CONFIG>"
   VERBATIM
 )
+# The standalone host links censr-core (which imports onnxruntime), so it needs
+# the same ORT DLLs beside its .exe to launch, even though the MVP uses WinRT OCR.
+if(TARGET censr-host)
+  add_custom_command(
+    TARGET censr-host
+    POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${_censr_ort_dlls}
+      "$<TARGET_FILE_DIR:censr-host>"
+    VERBATIM
+  )
+endif()
 endif() # WIN32 (ONNX Runtime)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
