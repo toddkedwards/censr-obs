@@ -54,11 +54,28 @@ This registers `censr-mfcam.dll` under `HKCR\CLSID\{…}` and calls
 censr-vcam.exe uninstall "C:\path\to\censr-mfcam.dll"
 ```
 
+## Legacy apps — the DirectShow filter
+
+Modern apps (Zoom, Teams, Discord, browsers) see the MF camera above via the
+Frame Server. Older apps that only enumerate **DirectShow** video-input devices
+need the separate `censr-dshowcam.dll`, which registers itself under
+`CLSID_VideoInputDeviceCategory`. Sign it, then register elevated:
+
+```
+regsvr32 censr-dshowcam.dll        REM install (elevated)
+regsvr32 /u censr-dshowcam.dll     REM remove
+```
+
+Both cameras share the same friendly name and read the same host frame stream, so
+run whichever the target app enumerates. (Same status caveat as the MF source —
+compiles and reads the stream, not yet validated in a real DirectShow app; the
+connection/allocator negotiation is the usual spot that needs tuning.)
+
 ## Known follow-ups before this is shippable
 
-- Validate in real apps; tune media-source attributes / media-type negotiation as
-  needed (this is where a from-scratch MF source usually needs iteration).
-- Add a DirectShow source filter for apps that don't use the modern Frame Server.
-- Package the DLL + tool + host into the signed installer and register on install.
-- Handle output sizes other than the fixed 1080p (currently the source scales the
+- Validate both sources in real apps; tune MF media-type attributes and the
+  DirectShow connection/allocator negotiation as needed (this is where from-scratch
+  filters usually need iteration).
+- Package the DLLs + tool + host into the signed installer and register on install.
+- Handle output sizes other than the fixed 1080p (currently the sources scale the
   incoming frame to 1920×1080).

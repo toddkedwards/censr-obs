@@ -210,6 +210,33 @@ if(WIN32)
     set_target_properties(
       censr-vcam PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
     )
+
+    # --- DirectShow source filter (legacy apps that bypass the Frame Server) --
+    # Self-contained (no BaseClasses); registers under the video-input category.
+    add_library(
+      censr-dshowcam SHARED
+      src/vcam/dshow_dll.cpp
+      src/vcam/dshow_filter.cpp
+      src/vcam/dshow_guidalloc.cpp
+      src/host/shared_frame.cpp
+    )
+    target_include_directories(
+      censr-dshowcam PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/vcam"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/src/host"
+    )
+    target_link_libraries(
+      censr-dshowcam PRIVATE strmiids ole32 oleaut32 runtimeobject
+    )
+    target_link_options(
+      censr-dshowcam PRIVATE
+      "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/src/vcam/censr-dshowcam.def"
+    )
+    target_compile_definitions(
+      censr-dshowcam PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+    )
+    set_target_properties(
+      censr-dshowcam PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
+    )
   endif()
 endif()
 

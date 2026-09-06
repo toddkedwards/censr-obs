@@ -170,10 +170,18 @@ yet runtime-validated** inside a real camera app — that needs the elevated, si
 install in `docs/virtual-camera-install.md` plus a Win11 capture app, and is where a
 from-scratch MF media source typically needs attribute/media-type iteration.
 
-**Still to do for Phase 2:** validate + tune the MF source in real apps; add the
-**DirectShow source filter** for apps that bypass the Frame Server; and fold the DLL
-+ tool + host into the **signed installer** that registers on install. That is the
-part that needs a real code-signing cert and elevated/MSIX install — see the
+The **DirectShow source filter** for legacy apps that bypass the Frame Server is
+also built — `src/vcam/dshow_filter.cpp` + `dshow_dll.cpp` (+ `dshow_guid*`,
+`censr-dshowcam.def`): a self-contained (no BaseClasses) push source registered
+under `CLSID_VideoInputDeviceCategory`, serving the same shared stream as RGB32.
+`censr-dshowcam.dll` compiles, links against the SDK, and exports a valid COM
+server (`regsvr32`-registerable); like the MF source it is not yet validated in a
+real capture app.
+
+**Still to do for Phase 2:** runtime-validate + tune **both** sources in real apps
+(MF media-type attributes; DirectShow connection/allocator negotiation), and fold
+the DLLs + tool + host into the **signed installer** that registers on install —
+the part that needs a real code-signing cert and elevated/MSIX install. See the
 device-backend and signing notes above and `docs/virtual-camera-install.md`.
 
 ## Open questions to settle before Phase 2
