@@ -102,22 +102,26 @@ bool is_high_entropy_token(const std::string &w)
 	return shannon_entropy(w) >= 3.2;
 }
 
-bool line_is_secret(const OcrLine &line)
+bool line_is_secret(const OcrLine &line, uint32_t mask)
 {
 	const std::string &t = line.text;
-	if (std::regex_search(t, email_re()))
+	if ((mask & CENSR_RULE_EMAILS) && std::regex_search(t, email_re()))
 		return true;
-	if (std::regex_search(t, aws_re()))
-		return true;
-	if (std::regex_search(t, github_re()))
-		return true;
-	if (std::regex_search(t, sk_re()))
-		return true;
+	if (mask & CENSR_RULE_APIKEYS) {
+		if (std::regex_search(t, aws_re()))
+			return true;
+		if (std::regex_search(t, github_re()))
+			return true;
+		if (std::regex_search(t, sk_re()))
+			return true;
+	}
 	/* Label keyword only counts in an assignment-like context. */
-	if (std::regex_search(t, label_re()) &&
+	if ((mask & CENSR_RULE_LABELS) && std::regex_search(t, label_re()) &&
 	    (std::regex_search(t, assignment_re()) ||
 	     std::regex_search(t, upper_ident_re())))
 		return true;
+	if (!(mask & CENSR_RULE_APIKEYS))
+		return false;
 	/* High-entropy check on whitespace-separated tokens (not the whole
 	 * line — the GPU engine returns a line as one "word", which would make
 	 * ordinary long prose lines look high-entropy). */
@@ -139,13 +143,14 @@ bool line_is_secret(const OcrLine &line)
 
 } // namespace
 
-std::vector<RectF> find_secret_boxes(const std::vector<OcrLine> &lines)
+std::vector<RectF> find_secret_boxes(const std::vector<OcrLine> &lines,
+				     uint32_t rule_mask)
 {
 	std::vector<RectF> boxes;
 	for (const auto &line : lines) {
 		if (line.words.empty())
 			continue;
-		if (line_is_secret(line))
+		if (line_is_secret(line, rule_mask))
 			boxes.push_back(line.box);
 	}
 	return boxes;

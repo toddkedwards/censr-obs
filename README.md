@@ -100,6 +100,18 @@ cmake --build --preset windows-x64-local
 %ProgramData%\obs-studio\plugins\censr\data\...
 ```
 
+## Configuration
+
+Add the **Censr Redaction** filter to a source and open its properties (all apply
+live):
+
+- **Zero-leak delay (ms)** — 0–2000; how long output is held so covers are ready
+  before a frame shows. 0 ≈ live.
+- **Cover color** — the opaque fill color (default amber).
+- **OCR engine** — Auto (GPU, else Windows) / GPU (ONNX·DirectML) / Windows OCR.
+- **Rule toggles** — API keys & tokens, password/secret/token lines, emails, QR
+  codes.
+
 ## Verification harness
 
 `tools/` contains a Python harness that drives OBS via its WebSocket server to
@@ -110,8 +122,7 @@ and `tools/make_fixture.py` (generates a 1080p fixture with **fake** secrets).
 ## Roadmap
 
 - Rounded-corner covers; per-word (vs per-line) redaction granularity.
-- Filter properties UI (toggle rules, adjust delay / cover color); motion-tracking
-  stress test.
+- Motion-tracking stress test.
 - Optional CUDA/TensorRT execution provider for the OCR models.
 
 ## License

@@ -23,23 +23,36 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <util/platform.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include "censr-filter.h"
 #include "censr_detector.h"
 #include "ocr_engine.h"
+#include "secret_rules.h"
 #include "plugin-support.h"
 
 #define CENSR_FILTER_ID "censr_redaction"
 
-static constexpr uint64_t CENSR_DELAY_NS = 1500000000ull;          /* 1.5 s delay */
+static constexpr uint64_t CENSR_DEFAULT_DELAY_MS = 1500;           /* zero-leak */
 static constexpr uint64_t CENSR_DETECT_INTERVAL_NS = 200000000ull; /* 5 Hz */
 static constexpr uint64_t CENSR_SNAPSHOT_KEEP_NS = 3000000000ull;  /* retain 3 s */
 static constexpr float CENSR_COVER_PAD = 8.0f;                     /* src px */
+/* amber (r=255,g=191,b=0) in OBS RGB int (0xBBGGRR). */
+static constexpr uint32_t CENSR_DEFAULT_COLOR = 255u | (191u << 8);
+
+#define S_DELAY "delay_ms"
+#define S_COLOR "cover_color"
+#define S_ENGINE "ocr_engine"
+#define S_RULE_KEYS "rule_apikeys"
+#define S_RULE_LABELS "rule_labels"
+#define S_RULE_EMAILS "rule_emails"
+#define S_RULE_QR "rule_qr"
 
 namespace {
 
@@ -62,7 +75,16 @@ struct DetectionSnapshot {
 
 struct censr_filter {
 	obs_source_t *context = nullptr;
+
+	std::mutex detector_mutex; /* guards detector during engine rebuild */
 	std::unique_ptr<censr::Detector> detector;
+	std::string det_model, rec_model;
+	int engine_pref = 0; /* 0 auto, 1 gpu, 2 windows */
+	uint32_t rule_mask = censr::CENSR_RULE_ALL;
+
+	/* Settings (read on the render thread). */
+	std::atomic<uint64_t> delay_ns{CENSR_DEFAULT_DELAY_MS * 1000000ull};
+	std::atomic<uint32_t> cover_color{CENSR_DEFAULT_COLOR};
 
 	/* Time-stamped detection results. */
 	std::mutex snap_mutex;
@@ -146,8 +168,12 @@ void free_frames(censr_filter *filter)
 
 size_t wanted_frames(const censr_filter *filter)
 {
-	return filter->interval_ns ? (size_t)(CENSR_DELAY_NS / filter->interval_ns)
-				   : 0;
+	if (!filter->interval_ns)
+		return 0;
+	size_t n = (size_t)(filter->delay_ns.load() / filter->interval_ns);
+	/* Keep at least one frame so capture/readback/display always run
+	 * (delay 0 => ~live, ~one-frame latency). */
+	return n < 1 ? 1 : n;
 }
 
 void resize_ring(censr_filter *filter)
@@ -194,16 +220,13 @@ void censr_video_tick(void *data, float)
 	}
 
 	struct obs_video_info ovi = {};
-	if (obs_get_video_info(&ovi) && ovi.fps_num) {
-		uint64_t interval =
+	if (obs_get_video_info(&ovi) && ovi.fps_num)
+		filter->interval_ns =
 			(uint64_t)ovi.fps_den * 1000000000ull / ovi.fps_num;
-		if (interval != filter->interval_ns) {
-			filter->interval_ns = interval;
-			if (filter->target_valid)
-				resize_ring(filter);
-		}
-	}
-	if (filter->target_valid && filter->frames.empty())
+
+	/* Resize when the output fps or the delay setting changes. */
+	if (filter->target_valid && filter->interval_ns &&
+	    filter->frames.size() != wanted_frames(filter))
 		resize_ring(filter);
 }
 
@@ -239,15 +262,16 @@ void draw_delayed_frame(FrameSlot &f, uint32_t cx, uint32_t cy)
 	gs_enable_framebuffer_srgb(prev);
 }
 
-void draw_covers(const std::vector<censr_box> &boxes)
+void draw_covers(const std::vector<censr_box> &boxes, uint32_t rgb)
 {
 	if (boxes.empty())
 		return;
 	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
 	gs_eparam_t *color = gs_effect_get_param_by_name(solid, "color");
-	struct vec4 amber;
-	vec4_set(&amber, 1.0f, 0.749f, 0.0f, 1.0f);
-	gs_effect_set_vec4(color, &amber);
+	struct vec4 col;
+	vec4_set(&col, (rgb & 0xFF) / 255.f, ((rgb >> 8) & 0xFF) / 255.f,
+		 ((rgb >> 16) & 0xFF) / 255.f, 1.0f);
+	gs_effect_set_vec4(color, &col);
 
 	gs_blend_state_push();
 	gs_enable_blending(false);
@@ -314,6 +338,7 @@ void readback_for_detection(censr_filter *filter, FrameSlot &slot, uint64_t now)
 			memcpy(buf.data() + (size_t)y * filter->cx * 4,
 			       ptr + (size_t)y * linesize, (size_t)filter->cx * 4);
 		gs_stagesurface_unmap(filter->stage);
+		std::lock_guard<std::mutex> lk(filter->detector_mutex);
 		if (filter->detector)
 			filter->detector->submit(std::move(buf), (int)filter->cx,
 						 (int)filter->cy, (int)filter->cx,
@@ -355,7 +380,8 @@ void censr_video_render(void *data, gs_effect_t *effect)
 	FrameSlot &disp = filter->frames.front();
 	if (disp.has_content) {
 		draw_delayed_frame(disp, filter->cx, filter->cy);
-		draw_covers(covers_for(filter, disp.ts));
+		draw_covers(covers_for(filter, disp.ts),
+			    filter->cover_color.load());
 	} else {
 		draw_black(filter->cx, filter->cy); /* buffer still filling */
 	}
@@ -371,35 +397,145 @@ void censr_video_render(void *data, gs_effect_t *effect)
 
 /* --- lifecycle ----------------------------------------------------------- */
 
-void *censr_create(obs_data_t *settings, obs_source_t *source)
+censr::Detector::Engine engine_from_int(int v)
 {
-	UNUSED_PARAMETER(settings);
-	auto *filter = new censr_filter();
-	filter->context = source;
+	if (v == 1)
+		return censr::Detector::Engine::ONNX;
+	if (v == 2)
+		return censr::Detector::Engine::WINRT;
+	return censr::Detector::Engine::AUTO;
+}
 
-	/* Resolve the GPU OCR model paths in the plugin data dir (empty if not
-	 * bundled -> the detector falls back to Windows OCR). */
-	std::string det_model, rec_model;
-	char *dp = obs_module_file("models/ch_PP-OCRv4_det_infer.onnx");
-	char *rp = obs_module_file("models/ch_PP-OCRv4_rec_infer.onnx");
-	if (dp) {
-		det_model = dp;
-		bfree(dp);
-	}
-	if (rp) {
-		rec_model = rp;
-		bfree(rp);
-	}
+uint32_t rules_from_settings(obs_data_t *s)
+{
+	uint32_t m = 0;
+	if (obs_data_get_bool(s, S_RULE_KEYS))
+		m |= censr::CENSR_RULE_APIKEYS;
+	if (obs_data_get_bool(s, S_RULE_LABELS))
+		m |= censr::CENSR_RULE_LABELS;
+	if (obs_data_get_bool(s, S_RULE_EMAILS))
+		m |= censr::CENSR_RULE_EMAILS;
+	if (obs_data_get_bool(s, S_RULE_QR))
+		m |= censr::CENSR_RULE_QR;
+	return m;
+}
 
-	filter->detector = std::make_unique<censr::Detector>(
+std::unique_ptr<censr::Detector> make_detector(censr_filter *filter,
+					       censr::Detector::Engine eng)
+{
+	auto d = std::make_unique<censr::Detector>(
 		[filter](uint64_t ts, const std::vector<censr::RectF> &boxes) {
 			apply_detection(filter, ts, boxes);
 		},
-		det_model, rec_model);
+		filter->det_model, filter->rec_model, eng);
+	d->set_rules(filter->rule_mask);
+	return d;
+}
 
-	obs_log(LOG_INFO, "Censr Redaction filter created (zero-leak, %.1fs delay)",
-		(double)CENSR_DELAY_NS / 1.0e9);
+void *censr_create(obs_data_t *settings, obs_source_t *source)
+{
+	auto *filter = new censr_filter();
+	filter->context = source;
+
+	/* Resolve GPU OCR model paths in the plugin data dir (empty -> the
+	 * detector falls back to Windows OCR). */
+	char *dp = obs_module_file("models/ch_PP-OCRv4_det_infer.onnx");
+	char *rp = obs_module_file("models/ch_PP-OCRv4_rec_infer.onnx");
+	if (dp) {
+		filter->det_model = dp;
+		bfree(dp);
+	}
+	if (rp) {
+		filter->rec_model = rp;
+		bfree(rp);
+	}
+
+	filter->delay_ns.store((uint64_t)obs_data_get_int(settings, S_DELAY) *
+			       1000000ull);
+	filter->cover_color.store((uint32_t)obs_data_get_int(settings, S_COLOR));
+	filter->rule_mask = rules_from_settings(settings);
+	filter->engine_pref = (int)obs_data_get_int(settings, S_ENGINE);
+
+	filter->detector = make_detector(filter, engine_from_int(filter->engine_pref));
+
+	obs_log(LOG_INFO, "Censr Redaction filter created");
 	return filter;
+}
+
+void censr_update(void *data, obs_data_t *settings)
+{
+	auto *filter = static_cast<censr_filter *>(data);
+
+	filter->delay_ns.store((uint64_t)obs_data_get_int(settings, S_DELAY) *
+			       1000000ull);
+	filter->cover_color.store((uint32_t)obs_data_get_int(settings, S_COLOR));
+	filter->rule_mask = rules_from_settings(settings);
+	{
+		std::lock_guard<std::mutex> lk(filter->detector_mutex);
+		if (filter->detector)
+			filter->detector->set_rules(filter->rule_mask);
+	}
+
+	int engine = (int)obs_data_get_int(settings, S_ENGINE);
+	if (engine != filter->engine_pref) {
+		filter->engine_pref = engine;
+		/* Build the new detector first (its OCR inits async on the
+		 * worker), swap under the lock, then join the old one outside. */
+		auto nd = make_detector(filter, engine_from_int(engine));
+		std::unique_ptr<censr::Detector> old;
+		{
+			std::lock_guard<std::mutex> lk(filter->detector_mutex);
+			old = std::move(filter->detector);
+			filter->detector = std::move(nd);
+		}
+		old.reset();
+		obs_log(LOG_INFO, "Censr: OCR engine set to %s",
+			engine == 1 ? "GPU (ONNX)"
+				    : (engine == 2 ? "Windows OCR" : "Auto"));
+	}
+}
+
+void censr_defaults(obs_data_t *s)
+{
+	obs_data_set_default_int(s, S_DELAY, (long long)CENSR_DEFAULT_DELAY_MS);
+	obs_data_set_default_int(s, S_COLOR, (long long)CENSR_DEFAULT_COLOR);
+	obs_data_set_default_int(s, S_ENGINE, 0);
+	obs_data_set_default_bool(s, S_RULE_KEYS, true);
+	obs_data_set_default_bool(s, S_RULE_LABELS, true);
+	obs_data_set_default_bool(s, S_RULE_EMAILS, true);
+	obs_data_set_default_bool(s, S_RULE_QR, true);
+}
+
+obs_properties_t *censr_properties(void *data)
+{
+	UNUSED_PARAMETER(data);
+	obs_properties_t *p = obs_properties_create();
+
+	obs_property_t *delay = obs_properties_add_int_slider(
+		p, S_DELAY, "Zero-leak delay (ms)", 0, 2000, 50);
+	obs_property_int_set_suffix(delay, " ms");
+	obs_property_set_long_description(
+		delay,
+		"Output is held this long so detection finishes before a frame is "
+		"shown; a secret is never displayed uncovered. 0 = live (lower "
+		"latency, brief exposure on first appearance).");
+
+	obs_properties_add_color(p, S_COLOR, "Cover color");
+
+	obs_property_t *eng = obs_properties_add_list(p, S_ENGINE, "OCR engine",
+						      OBS_COMBO_TYPE_LIST,
+						      OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(eng, "Auto (GPU, else Windows)", 0);
+	obs_property_list_add_int(eng, "GPU (ONNX / DirectML)", 1);
+	obs_property_list_add_int(eng, "Windows OCR", 2);
+
+	obs_properties_add_bool(p, S_RULE_KEYS, "Redact API keys & tokens");
+	obs_properties_add_bool(p, S_RULE_LABELS,
+				"Redact password / secret / token lines");
+	obs_properties_add_bool(p, S_RULE_EMAILS, "Redact email addresses");
+	obs_properties_add_bool(p, S_RULE_QR, "Redact QR codes / barcodes");
+
+	return p;
 }
 
 void censr_destroy(void *data)
@@ -430,6 +566,9 @@ obs_source_info make_censr_filter_info()
 	info.destroy = censr_destroy;
 	info.video_render = censr_video_render;
 	info.video_tick = censr_video_tick;
+	info.get_properties = censr_properties;
+	info.get_defaults = censr_defaults;
+	info.update = censr_update;
 	return info;
 }
 

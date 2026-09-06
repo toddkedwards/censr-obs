@@ -68,9 +68,10 @@ RectF expand_to_text_extent(RectF box, const uint8_t *bin, int w, int h)
 
 } // namespace
 
-Detector::Detector(CoverCallback cb, std::string det_model, std::string rec_model)
+Detector::Detector(CoverCallback cb, std::string det_model, std::string rec_model,
+		   Engine engine)
 	: cb_(std::move(cb)), det_model_(std::move(det_model)),
-	  rec_model_(std::move(rec_model))
+	  rec_model_(std::move(rec_model)), engine_(engine)
 {
 	thread_ = std::thread(&Detector::run, this);
 }
@@ -106,9 +107,15 @@ void Detector::run()
 {
 	winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
-	const char *sel = getenv("CENSR_OCR");
+	Engine eng = engine_;
+	const char *sel = getenv("CENSR_OCR"); /* dev override */
+	if (sel && strcmp(sel, "onnx") == 0)
+		eng = Engine::ONNX;
+	else if (sel && strcmp(sel, "winrt") == 0)
+		eng = Engine::WINRT;
+
 	bool want_onnx = !det_model_.empty() && !rec_model_.empty() &&
-			 (!sel || strcmp(sel, "winrt") != 0);
+			 eng != Engine::WINRT;
 	if (want_onnx) {
 		ocr_ = create_onnx_ocr(det_model_, rec_model_);
 		if (ocr_)
@@ -165,13 +172,16 @@ void Detector::run()
 			ocr_bgra[i * 4 + 3] = 255;
 		}
 
+		const uint32_t mask = rule_mask_.load();
+
 		std::vector<RectF> det_boxes; /* detection-image space */
-		if (ocr_) {
+		if (ocr_ && (mask & (CENSR_RULE_APIKEYS | CENSR_RULE_LABELS |
+				     CENSR_RULE_EMAILS))) {
 			/* Pass the ORIGINAL image; the WinRT engine binarizes
 			 * internally, the ONNX engine wants the natural image.
 			 * ocr_bgra (binarized) is still used for extent growth. */
 			auto lines = ocr_->recognize(bgra.data(), w, h, w * 4);
-			auto secret_boxes = find_secret_boxes(lines);
+			auto secret_boxes = find_secret_boxes(lines, mask);
 			/* Grow each match to the full text run on its row so values
 			 * OCR dropped are still covered. */
 			for (auto &b : secret_boxes)
@@ -181,8 +191,11 @@ void Detector::run()
 		}
 
 		/* QR / barcodes (ZXing) on the original (non-binarized) image. */
-		auto qr_boxes = detect_qr_boxes(bgra.data(), w, h);
-		det_boxes.insert(det_boxes.end(), qr_boxes.begin(), qr_boxes.end());
+		if (mask & CENSR_RULE_QR) {
+			auto qr_boxes = detect_qr_boxes(bgra.data(), w, h);
+			det_boxes.insert(det_boxes.end(), qr_boxes.begin(),
+					 qr_boxes.end());
+		}
 
 		/* Map to source pixel space. */
 		const float sx = (float)frame.src_w / (float)w;

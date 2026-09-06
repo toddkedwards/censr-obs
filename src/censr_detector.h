@@ -7,6 +7,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
 #include "ocr_engine.h"
+#include "secret_rules.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -30,14 +31,19 @@ public:
 	using CoverCallback =
 		std::function<void(uint64_t ts, const std::vector<RectF> &source_boxes)>;
 
-	/* Model paths select the ONNX (GPU) engine; empty -> Windows OCR.
-	 * The CENSR_OCR env var ("onnx"/"winrt") overrides the choice. */
-	Detector(CoverCallback cb, std::string det_model, std::string rec_model);
+	/* Which OCR engine to use. AUTO = ONNX if models load, else Windows. */
+	enum class Engine { AUTO, ONNX, WINRT };
+
+	Detector(CoverCallback cb, std::string det_model, std::string rec_model,
+		 Engine engine);
 	~Detector();
 
 	/* Called on the render thread. rgba is tightly packed (w*4 stride). */
 	void submit(std::vector<uint8_t> rgba, int w, int h, int src_w, int src_h,
 		    uint64_t ts);
+
+	/* Live-updatable enabled rule categories (CensrRuleFlags bitmask). */
+	void set_rules(uint32_t mask) { rule_mask_.store(mask); }
 
 private:
 	struct Frame {
@@ -51,6 +57,8 @@ private:
 	CoverCallback cb_;
 	std::unique_ptr<ICensrOcr> ocr_;
 	std::string det_model_, rec_model_;
+	Engine engine_ = Engine::AUTO;
+	std::atomic<uint32_t> rule_mask_{CENSR_RULE_ALL};
 
 	std::thread thread_;
 	std::mutex mutex_;
