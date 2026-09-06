@@ -54,11 +54,20 @@ or chat app — the feed is redacted before it leaves your machine. See
   frame's timestamp.
 - **Zero-leak guarantee:** because output is delayed ~1.5 s — far longer than
   detection latency (~0.2–0.4 s) — every displayed frame's content has already
-  been processed, and its covers are drawn from the matching-era detection. A
-  secret is never shown uncovered, not even for one frame (during the initial
-  buffer fill the output is black, also leak-free). Verified with a transition
-  test: switching a live source to secret content, the secrets appear in the
-  delayed output already covered.
+  been processed, and its covers are drawn by unioning every detection within one
+  ~5 Hz sampling interval of that frame's era (so an *appearing* secret is covered
+  from its first displayed frame, and a *moving* one is covered along its path).
+  Output **fails closed**: until detection has reached a frame's era — during the
+  initial buffer fill, an OCR-engine swap, or a detection stall — that frame is
+  shown black rather than raw, and an un-built/invalid filter draws black, never
+  the source. Verified with a transition test: switching a live source to secret
+  content, the secrets appear in the delayed output already covered.
+- **What it does *not* guarantee:** detection samples at ~5 Hz, so a secret
+  on-screen for less than one sampling interval (~200 ms) that falls entirely
+  between two samples can go undetected — the guarantee covers content present for
+  at least a sampling interval. Keep the ~1.5 s delay (the safe default); delays
+  below ~0.5 s trade the guarantee for lower latency (best-effort covers, no
+  black-gating).
 
 Components (`src/`):
 

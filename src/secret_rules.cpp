@@ -11,6 +11,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <cmath>
 #include <regex>
 #include <string>
+#include <utility>
 
 namespace censr {
 
@@ -44,8 +45,13 @@ const std::regex &sk_re()
  * ':'/'=' or an ALL-CAPS identifier (e.g. GITHUB_TOKEN, SUPPORT_EMAIL). */
 const std::regex &label_re()
 {
+	/* Boundary is any non-letter (incl. '_' and digits), not \b, so keywords
+	 * inside UPPER_SNAKE env-var names match (GITHUB_TOKEN, SUPPORT_EMAIL,
+	 * AWS_SECRET_ACCESS_KEY) while substrings of real words do not
+	 * (tokenizer, passwordless). The leading group is consumed — this regex
+	 * is only used as a boolean gate, never for span offsets. */
 	static const std::regex re(
-		R"(\b(pass(word|wd)?|pwd|secret|token|api[_\- ]?key|apikey|access[_\- ]?key|secret[_\- ]?key|private[_\- ]?key|client[_\- ]?secret|github|gitlab|bearer|authorization|credential|e[\- ]?mail)\b)",
+		R"((?:^|[^A-Za-z])(pass(word|wd)?|pwd|secret|token|api[_\- ]?key|apikey|access[_\- ]?key|secret[_\- ]?key|private[_\- ]?key|client[_\- ]?secret|github|gitlab|bearer|authorization|credential|e[\- ]?mail)(?![A-Za-z]))",
 		std::regex::icase);
 	return re;
 }
@@ -96,7 +102,9 @@ bool has_mixed_classes(const std::string &s)
 /* A word that looks like a high-entropy secret token. */
 bool is_high_entropy_token(const std::string &w)
 {
-	if (w.size() < 20)
+	/* 16 chars is a common minimum for real keys/tokens; the mixed-class +
+	 * entropy gates below keep ordinary prose words out. */
+	if (w.size() < 16)
 		return false;
 	if (!has_mixed_classes(w))
 		return false;
@@ -226,18 +234,42 @@ std::vector<RectF> find_secret_boxes(const std::vector<OcrLine> &lines,
 		}
 
 		auto spans = secret_spans(line.text, rule_mask);
-		size_t L = line.text.size();
 		if (spans.empty())
 			continue;
-		if (L == 0) {
-			boxes.push_back(line.box);
-			continue;
+
+		/* Reconstruct each word's character range within line.text so a
+		 * secret char-span maps to the OCR engine's real word boxes.
+		 * Covering a word's whole box never leaves part of the token
+		 * visible — proportional char->pixel mapping does, on proportional
+		 * fonts or when OCR drops characters. When a span can't be resolved
+		 * to a word (or the engine returns the line as one word), fall back
+		 * to covering the whole line box (over-cover, never leak). */
+		std::vector<std::pair<size_t, size_t>> wranges;
+		wranges.reserve(line.words.size());
+		size_t cur = 0;
+		for (const auto &w : line.words) {
+			size_t pos = line.text.find(w.text, cur);
+			if (pos == std::string::npos) {
+				wranges.push_back({SIZE_MAX, SIZE_MAX});
+			} else {
+				wranges.push_back({pos, pos + w.text.size()});
+				cur = pos + w.text.size();
+			}
 		}
+
 		for (const auto &sp : spans) {
-			RectF r = line.box;
-			r.x = line.box.x + (float)sp.s / L * line.box.w;
-			r.w = (float)(sp.e - sp.s) / L * line.box.w;
-			boxes.push_back(r);
+			bool matched = false;
+			for (size_t k = 0; k < line.words.size(); ++k) {
+				size_t ws = wranges[k].first, we = wranges[k].second;
+				if (ws == SIZE_MAX)
+					continue;
+				if (ws < sp.e && sp.s < we) { /* char ranges overlap */
+					boxes.push_back(line.words[k].box);
+					matched = true;
+				}
+			}
+			if (!matched)
+				boxes.push_back(line.box);
 		}
 	}
 	return boxes;

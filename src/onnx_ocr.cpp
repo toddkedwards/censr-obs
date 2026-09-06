@@ -274,10 +274,20 @@ private:
 		const char *onames[] = {det_out_.c_str()};
 		auto outs = det_.Run(Ort::RunOptions{nullptr}, inames, &tin, 1,
 				     onames, 1);
+		/* DB head normally outputs [1,1,rh,rw]. Read the real trailing
+		 * dims and validate the element count so a differently-exported
+		 * or tampered model can't drive an out-of-bounds read. */
+		auto dinfo = outs[0].GetTensorTypeAndShapeInfo();
+		auto dshape = dinfo.GetShape();
+		int mh = rh, mw = rw;
+		if (dshape.size() == 4 && dshape[2] > 0 && dshape[3] > 0) {
+			mh = (int)dshape[2];
+			mw = (int)dshape[3];
+		}
+		if (dinfo.GetElementCount() < (size_t)mw * mh)
+			return {};
 		const float *prob = outs[0].GetTensorData<float>();
-		/* prob shape [1,1,rh,rw]. */
-
-		return boxes_from_prob(prob, rw, rh, w, h);
+		return boxes_from_prob(prob, mw, mh, w, h);
 	}
 
 	std::vector<RectF> boxes_from_prob(const float *prob, int mw, int mh,
@@ -397,8 +407,14 @@ private:
 				     onames, 1);
 		auto info = outs[0].GetTensorTypeAndShapeInfo();
 		auto oshape = info.GetShape(); /* [1, T, C] */
+		if (oshape.size() < 3)
+			return "";
 		int T = (int)oshape[1];
 		int C = (int)oshape[2];
+		/* Guard against dynamic (-1)/degenerate dims and a shape that
+		 * disagrees with the buffer before indexing pd[t*C + c]. */
+		if (T <= 0 || C <= 0 || info.GetElementCount() < (size_t)T * C)
+			return "";
 		const float *pd = outs[0].GetTensorData<float>();
 
 		std::string text;

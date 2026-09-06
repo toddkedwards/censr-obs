@@ -32,10 +32,13 @@ jobs:
           "version=$($spec.version)" >> $env:GITHUB_OUTPUT
 
       - name: Configure
-        run: cmake --preset windows-ci-x64
+        run: cmake --preset windows-ci-x64 -DCENSR_BUILD_TESTS=ON
 
       - name: Build
         run: cmake --build --preset windows-ci-x64
+
+      - name: Test (headless detection-logic unit tests)
+        run: ctest --test-dir build_x64 -C RelWithDebInfo --output-on-failure
 
       # Configure code signing from secrets (if any). Priority: Azure Trusted
       # Signing (CENSR_TS_ENDPOINT set) -> a .pfx (CENSR_SIGN_PFX_BASE64) ->

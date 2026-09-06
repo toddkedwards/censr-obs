@@ -105,7 +105,14 @@ def sign_file(path, cfg, signtool):
         else:
             args += ["/sha1", cfg["thumbprint"]]
         args.append(path)
-    subprocess.run(args, check=True)
+    # Do NOT use check=True: a raised CalledProcessError stringifies the full
+    # argv, which for the .pfx path includes "/p <password>" and would print the
+    # signing password into (public) CI logs. Run unchecked and raise a scrubbed
+    # error instead.
+    rc = subprocess.run(args).returncode
+    if rc != 0:
+        raise RuntimeError(
+            f"signtool failed (exit {rc}) signing {os.path.basename(path)}")
     print(f"  signed {os.path.basename(path)}")
 
 

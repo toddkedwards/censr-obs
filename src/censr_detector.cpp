@@ -118,10 +118,19 @@ void Detector::run()
 
 	bool want_onnx = !det_model_.empty() && !rec_model_.empty() &&
 			 eng != Engine::WINRT;
+	/* User explicitly asked for GPU but the models aren't available. */
+	if (eng == Engine::ONNX && !want_onnx)
+		censr_log(LOG_WARNING,
+			  "Censr detector: GPU OCR requested but models not found; "
+			  "falling back to Windows.Media.Ocr");
 	if (want_onnx) {
 		ocr_ = create_onnx_ocr(det_model_, rec_model_);
 		if (ocr_)
 			censr_log(LOG_INFO, "Censr detector: using GPU OCR (ONNX/DirectML)");
+		else if (eng == Engine::ONNX)
+			censr_log(LOG_WARNING,
+				  "Censr detector: GPU OCR init failed; "
+				  "falling back to Windows.Media.Ocr");
 	}
 	if (!ocr_) {
 		ocr_ = create_winrt_ocr();

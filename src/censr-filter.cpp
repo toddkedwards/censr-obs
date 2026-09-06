@@ -43,6 +43,12 @@ static constexpr uint64_t CENSR_DEFAULT_DELAY_MS = 1500;           /* zero-leak 
 static constexpr uint64_t CENSR_DETECT_INTERVAL_NS = 200000000ull; /* 5 Hz */
 static constexpr uint64_t CENSR_SNAPSHOT_KEEP_NS = 3000000000ull;  /* retain 3 s */
 static constexpr float CENSR_COVER_PAD = 8.0f;                     /* src px */
+/* At or above this delay the zero-leak guarantee is expected, so the display
+ * fails *closed* (draws black) for any frame whose era detection hasn't reached
+ * yet — cold start, engine swap, or a detection stall. Below it the user has
+ * opted into low-latency/live output (see the delay-slider help), so we show
+ * best-effort covers without black-gating. */
+static constexpr uint64_t CENSR_GUARANTEE_MIN_DELAY_NS = 500000000ull; /* 500 ms */
 /* amber (r=255,g=191,b=0) in OBS RGB int (0xBBGGRR). */
 static constexpr uint32_t CENSR_DEFAULT_COLOR = 255u | (191u << 8);
 
@@ -180,23 +186,37 @@ void apply_detection(censr_filter *filter, uint64_t ts,
 		filter->snapshots.pop_front();
 }
 
-/* Covers for the frame captured at display_ts: the snapshot nearest in time. */
-std::vector<censr_box> covers_for(censr_filter *filter, uint64_t display_ts)
+struct CoverSet {
+	std::vector<censr_box> boxes;
+	/* True once a detection snapshot at or after display_ts exists, i.e.
+	 * detection has observed this frame's era. While false (detector cold,
+	 * mid engine-swap, or momentarily behind) we cannot vouch for the frame. */
+	bool detection_current = false;
+};
+
+/* Covers for the frame captured at display_ts. Detection only samples at ~5 Hz
+ * while every frame is displayed, so a single "nearest snapshot" can predate an
+ * appearing secret (leaking it) or lag a moving one. Instead union every
+ * snapshot within one detection cadence of display_ts: an appearing secret's
+ * first detection, a disappearing secret's last, and both endpoints of a moving
+ * secret all fall inside the window, so the result over-covers (safe) rather
+ * than under-covers. The window is widened by two frame intervals to absorb the
+ * readback cadence jitter (a snapshot can land up to ~one frame late). */
+CoverSet covers_for(censr_filter *filter, uint64_t display_ts)
 {
+	const uint64_t win = CENSR_DETECT_INTERVAL_NS + 2 * filter->interval_ns;
+	CoverSet out;
 	std::lock_guard<std::mutex> lk(filter->snap_mutex);
-	const DetectionSnapshot *best = nullptr;
-	uint64_t best_dt = UINT64_MAX;
 	for (const auto &s : filter->snapshots) {
 		uint64_t dt = s.ts > display_ts ? s.ts - display_ts
 						: display_ts - s.ts;
-		if (dt < best_dt) {
-			best_dt = dt;
-			best = &s;
-		}
+		if (dt <= win)
+			out.boxes.insert(out.boxes.end(), s.boxes.begin(),
+					 s.boxes.end());
+		if (s.ts >= display_ts)
+			out.detection_current = true;
 	}
-	if (best)
-		return best->boxes;
-	return {};
+	return out;
 }
 
 /* --- ring management ----------------------------------------------------- */
@@ -255,6 +275,13 @@ void censr_video_tick(void *data, float)
 		filter->cx = cx;
 		filter->cy = cy;
 		free_frames(filter);
+		/* Snapshots hold boxes in the OLD source pixel space; drop them so a
+		 * post-resize frame can't be covered with stale coordinates (which
+		 * would misplace covers and leave the secret's new position bare). */
+		{
+			std::lock_guard<std::mutex> lk(filter->snap_mutex);
+			filter->snapshots.clear();
+		}
 		if (filter->stage) {
 			obs_enter_graphics();
 			gs_stagesurface_destroy(filter->stage);
@@ -435,8 +462,15 @@ void censr_video_render(void *data, gs_effect_t *effect)
 	obs_source_t *target = obs_filter_get_target(filter->context);
 	obs_source_t *parent = obs_filter_get_parent(filter->context);
 
-	if (!filter->target_valid || !target || !parent || filter->frames.empty()) {
+	if (!filter->target_valid || !target || !parent) {
+		/* No usable source this frame; nothing is being redacted. */
 		obs_source_skip_video_filter(filter->context);
+		return;
+	}
+	if (filter->frames.empty()) {
+		/* Ring not built yet. Fail *closed* — never pass the raw,
+		 * undelayed source through a redaction filter. */
+		draw_black(filter->cx, filter->cy);
 		return;
 	}
 
@@ -457,11 +491,21 @@ void censr_video_render(void *data, gs_effect_t *effect)
 
 	/* Display the oldest frame (~DELAY old) with its era's covers. */
 	FrameSlot &disp = filter->frames.front();
-	if (disp.has_content) {
-		draw_delayed_frame(disp, filter->cx, filter->cy);
-		draw_covers(filter, covers_for(filter, disp.ts));
-	} else {
+	if (!disp.has_content) {
 		draw_black(filter->cx, filter->cy); /* buffer still filling */
+	} else {
+		CoverSet cov = covers_for(filter, disp.ts);
+		bool guarantee =
+			filter->delay_ns.load() >= CENSR_GUARANTEE_MIN_DELAY_NS;
+		if (guarantee && !cov.detection_current) {
+			/* Detection hasn't reached this frame's era (cold start,
+			 * engine swap, or a stall). Fail closed rather than risk
+			 * showing an unscanned secret. */
+			draw_black(filter->cx, filter->cy);
+		} else {
+			draw_delayed_frame(disp, filter->cx, filter->cy);
+			draw_covers(filter, cov.boxes);
+		}
 	}
 
 	if (now - filter->last_delaylog_ns >= 5000000000ull) {

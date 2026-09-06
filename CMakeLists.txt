@@ -85,6 +85,23 @@ set_target_properties(
     CXX_STANDARD_REQUIRED ON
 )
 
+# --- Headless unit tests (opt-in) ---------------------------------------------
+# Pure detection-logic tests: no OBS/GPU/OCR, just secret_rules. Build with
+# -DCENSR_BUILD_TESTS=ON and run with ctest.
+option(CENSR_BUILD_TESTS "Build headless unit tests" OFF)
+if(CENSR_BUILD_TESTS)
+  enable_testing()
+  add_executable(censr-test-secret-rules
+    tools/test_secret_rules.cpp
+    src/secret_rules.cpp)
+  target_include_directories(censr-test-secret-rules PRIVATE src)
+  set_target_properties(
+    censr-test-secret-rules
+    PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
+  )
+  add_test(NAME secret-rules COMMAND censr-test-secret-rules)
+endif()
+
 # --- C++/WinRT (Windows.Media.Ocr) — Windows only ---
 if(WIN32)
   # The projection headers ship with the Windows SDK under Include/<ver>/cppwinrt.
@@ -112,8 +129,8 @@ set(ZXING_BLACKBOX_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   ZXing
   GIT_REPOSITORY https://github.com/zxing-cpp/zxing-cpp.git
-  GIT_TAG v2.3.0
-  GIT_SHALLOW ON
+  # Pinned to the immutable commit for v2.3.0 (a tag can be re-pointed upstream).
+  GIT_TAG d6068bcebeb8fd9f0d35a99b00d202be86a14dbe
 )
 # The template defaults CMAKE_COMPILE_WARNING_AS_ERROR to ON; ZXing is not
 # warning-clean under MSVC, so build it without /WX.
