@@ -4,7 +4,7 @@
 ; that installs into %ProgramData%\obs-studio\plugins\censr.
 
 #define MyAppName "Censr Redaction for OBS"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.1.1"
 #define MyPublisher "Todd Edwards"
 
 [Setup]
