@@ -1,0 +1,25 @@
+name: macOS Build
+run-name: ${{ github.ref_name }} macOS build 🍏
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: Build (macOS universal, Vision OCR)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # No model/ORT fetch: the macOS backend uses Apple Vision (a system
+      # framework); OBS deps + ZXing are fetched by CMake at configure time.
+      - name: Configure
+        run: cmake --preset macos
+
+      - name: Build
+        run: cmake --build --preset macos
+
+      - name: Show built plugin bundle
+        run: find build_macos -maxdepth 4 -name '*.plugin' -print
