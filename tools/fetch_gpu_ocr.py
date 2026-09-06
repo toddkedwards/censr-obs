@@ -36,6 +36,12 @@ def fetch_models():
     print("Fetching PP-OCRv4 ONNX models via rapidocr-onnxruntime ...")
     subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet",
                     "rapidocr-onnxruntime"], check=True)
+    # Make the freshly --user-installed package importable in this process (its
+    # site dir may not be on sys.path yet, e.g. on CI).
+    import importlib
+    import site
+    site.addsitedir(site.getusersitepackages())
+    importlib.invalidate_caches()
     import rapidocr_onnxruntime  # noqa: E402
     src = os.path.join(os.path.dirname(rapidocr_onnxruntime.__file__), "models")
     import shutil
