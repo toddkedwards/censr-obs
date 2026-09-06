@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -49,14 +50,32 @@ def find_signtool():
 
 
 def sign_config():
-    """Authenticode config from env; None if signing isn't configured.
-    CENSR_SIGN_PFX (+ CENSR_SIGN_PASSWORD) for a .pfx, or CENSR_SIGN_THUMBPRINT
-    for a cert already in the store. CENSR_SIGN_TIMESTAMP overrides the TSA."""
+    """Signing config from env; None if signing isn't configured. Priority:
+      1. Azure Trusted Signing — CENSR_TS_ENDPOINT + CENSR_TS_ACCOUNT +
+         CENSR_TS_PROFILE + CENSR_TS_DLIB (path to Azure.CodeSigning.Dlib.dll);
+         authenticated via the standard Azure env (AZURE_CLIENT_ID/TENANT_ID/
+         CLIENT_SECRET, Azure CLI login, or managed identity).
+      2. A .pfx — CENSR_SIGN_PFX (+ CENSR_SIGN_PASSWORD).
+      3. A store cert — CENSR_SIGN_THUMBPRINT.
+    CENSR_SIGN_TIMESTAMP overrides the timestamp server."""
+    ep = os.environ.get("CENSR_TS_ENDPOINT")
+    if ep and all(os.environ.get(k) for k in
+                  ("CENSR_TS_ACCOUNT", "CENSR_TS_PROFILE", "CENSR_TS_DLIB")):
+        return {
+            "mode": "ts",
+            "endpoint": ep,
+            "account": os.environ["CENSR_TS_ACCOUNT"],
+            "profile": os.environ["CENSR_TS_PROFILE"],
+            "dlib": os.environ["CENSR_TS_DLIB"],
+            "timestamp": os.environ.get("CENSR_SIGN_TIMESTAMP",
+                                        "http://timestamp.acs.microsoft.com"),
+        }
     pfx = os.environ.get("CENSR_SIGN_PFX")
     thumb = os.environ.get("CENSR_SIGN_THUMBPRINT")
     if not pfx and not thumb:
         return None
     return {
+        "mode": "cert",
         "pfx": pfx,
         "password": os.environ.get("CENSR_SIGN_PASSWORD"),
         "thumbprint": thumb,
@@ -66,15 +85,26 @@ def sign_config():
 
 
 def sign_file(path, cfg, signtool):
-    args = [signtool, "sign", "/fd", "SHA256",
-            "/tr", cfg["timestamp"], "/td", "SHA256"]
-    if cfg["pfx"]:
-        args += ["/f", cfg["pfx"]]
-        if cfg["password"]:
-            args += ["/p", cfg["password"]]
+    if cfg["mode"] == "ts":
+        meta = {"Endpoint": cfg["endpoint"],
+                "CodeSigningAccountName": cfg["account"],
+                "CertificateProfileName": cfg["profile"]}
+        mdf = os.path.join(tempfile.gettempdir(), "censr_ts_metadata.json")
+        with open(mdf, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        args = [signtool, "sign", "/v", "/fd", "SHA256",
+                "/tr", cfg["timestamp"], "/td", "SHA256",
+                "/dlib", cfg["dlib"], "/dmdf", mdf, path]
     else:
-        args += ["/sha1", cfg["thumbprint"]]
-    args.append(path)
+        args = [signtool, "sign", "/fd", "SHA256",
+                "/tr", cfg["timestamp"], "/td", "SHA256"]
+        if cfg["pfx"]:
+            args += ["/f", cfg["pfx"]]
+            if cfg["password"]:
+                args += ["/p", cfg["password"]]
+        else:
+            args += ["/sha1", cfg["thumbprint"]]
+        args.append(path)
     subprocess.run(args, check=True)
     print(f"  signed {os.path.basename(path)}")
 
@@ -126,11 +156,12 @@ def main():
         print("WARNING: signing configured but signtool.exe not found; skipping")
         cfg = None
     if cfg:
-        print("Signing plugin binary ...")
+        print(f"Signing plugin binary ({cfg['mode']}) ...")
         sign_file(os.path.join(stage, name, "bin", "64bit", f"{name}.dll"),
                   cfg, signtool)
     else:
-        print("(unsigned — set CENSR_SIGN_PFX or CENSR_SIGN_THUMBPRINT to sign)")
+        print("(unsigned — set CENSR_TS_* (Trusted Signing) or CENSR_SIGN_PFX "
+              "/ CENSR_SIGN_THUMBPRINT to sign)")
 
     out = os.path.join(ROOT, "dist", f"{name}-{version}-windows-x64.zip")
     total = 0

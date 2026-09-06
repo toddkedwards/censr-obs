@@ -145,10 +145,21 @@ set CENSR_SIGN_PASSWORD=...            # or use CENSR_SIGN_THUMBPRINT for a stor
 python tools/package.py --installer
 ```
 
-In CI, add repo secrets `CENSR_SIGN_PFX_BASE64` (base64 of the `.pfx`) and
-`CENSR_SIGN_PASSWORD`; the release workflow signs automatically when they're
-present. A real (trusted) Authenticode certificate from a CA is required to
-actually suppress SmartScreen — a self-signed cert only proves the pipeline.
+Or use **Azure Trusted Signing** (cloud, ~$10/mo, no cert file — recommended for
+CI): set `CENSR_TS_ENDPOINT`, `CENSR_TS_ACCOUNT`, `CENSR_TS_PROFILE`, and
+`CENSR_TS_DLIB` (path to `Azure.CodeSigning.Dlib.dll` from the
+`Microsoft.Trusted.Signing.Client` NuGet), authenticated via the standard Azure
+env (`AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_CLIENT_SECRET`, `az login`, or a
+managed identity).
+
+In CI, add repo secrets and the release workflow signs automatically:
+- **Trusted Signing:** `CENSR_TS_ENDPOINT`, `CENSR_TS_ACCOUNT`, `CENSR_TS_PROFILE`
+  + `AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_CLIENT_SECRET` (a service principal
+  with the *Trusted Signing Certificate Profile Signer* role).
+- **or PFX:** `CENSR_SIGN_PFX_BASE64` (base64 of the `.pfx`) + `CENSR_SIGN_PASSWORD`.
+
+A real (trusted) certificate is required to actually suppress SmartScreen — a
+self-signed cert only proves the pipeline.
 
 ## Configuration
 

@@ -37,25 +37,47 @@ jobs:
       - name: Build
         run: cmake --build --preset windows-ci-x64
 
-      # Decode the code-signing cert from a secret (if configured). When the
-      # secret is absent, artifacts are built unsigned.
+      # Configure code signing from secrets (if any). Priority: Azure Trusted
+      # Signing (CENSR_TS_ENDPOINT set) -> a .pfx (CENSR_SIGN_PFX_BASE64) ->
+      # unsigned. Absent secrets => unsigned build (stays green).
       - name: Prepare code signing
         id: sign
         env:
+          TS_ENDPOINT: ${{ secrets.CENSR_TS_ENDPOINT }}
           PFX_B64: ${{ secrets.CENSR_SIGN_PFX_BASE64 }}
         run: |
-          if ($env:PFX_B64) {
+          if ($env:TS_ENDPOINT) {
+            # Azure Trusted Signing: fetch the signing dlib.
+            $ver = "1.0.60"
+            Invoke-WebRequest "https://www.nuget.org/api/v2/package/Microsoft.Trusted.Signing.Client/$ver" -OutFile "$env:RUNNER_TEMP\ts.zip"
+            Expand-Archive "$env:RUNNER_TEMP\ts.zip" "$env:RUNNER_TEMP\ts" -Force
+            $dlib = (Get-ChildItem "$env:RUNNER_TEMP\ts" -Recurse -Filter Azure.CodeSigning.Dlib.dll | Select-Object -First 1).FullName
+            "dlib=$dlib" >> $env:GITHUB_OUTPUT
+            "pfx=" >> $env:GITHUB_OUTPUT
+            Write-Host "Azure Trusted Signing configured; artifacts will be signed."
+          } elseif ($env:PFX_B64) {
             [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\censr.pfx",
               [Convert]::FromBase64String($env:PFX_B64))
             "pfx=$env:RUNNER_TEMP\censr.pfx" >> $env:GITHUB_OUTPUT
-            Write-Host "Code-signing cert configured; artifacts will be signed."
+            "dlib=" >> $env:GITHUB_OUTPUT
+            Write-Host "PFX code-signing configured; artifacts will be signed."
           } else {
             "pfx=" >> $env:GITHUB_OUTPUT
-            Write-Host "No CENSR_SIGN_PFX_BASE64 secret; artifacts will be unsigned."
+            "dlib=" >> $env:GITHUB_OUTPUT
+            Write-Host "No signing secret; artifacts will be unsigned."
           }
 
       - name: Package
         env:
+          # Azure Trusted Signing (used when CENSR_TS_ENDPOINT is set):
+          CENSR_TS_ENDPOINT: ${{ secrets.CENSR_TS_ENDPOINT }}
+          CENSR_TS_ACCOUNT: ${{ secrets.CENSR_TS_ACCOUNT }}
+          CENSR_TS_PROFILE: ${{ secrets.CENSR_TS_PROFILE }}
+          CENSR_TS_DLIB: ${{ steps.sign.outputs.dlib }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          # .pfx fallback:
           CENSR_SIGN_PFX: ${{ steps.sign.outputs.pfx }}
           CENSR_SIGN_PASSWORD: ${{ secrets.CENSR_SIGN_PASSWORD }}
         run: python tools/package.py --build-dir build_x64
