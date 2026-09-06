@@ -37,6 +37,13 @@ Close OBS, then either:
 Reopen OBS and add the **Censr Redaction** filter to any source (right-click the
 source → Filters → **+** → Censr Redaction).
 
+## Use it in any app (Zoom, Meet, Teams, Discord…)
+
+You don't have to stream from OBS. Run the Censr filter in OBS, start OBS's built-in
+**Virtual Camera**, and select **"OBS Virtual Camera"** as the webcam in any meeting
+or chat app — the feed is redacted before it leaves your machine. See
+[docs/use-anywhere-virtual-camera.md](docs/use-anywhere-virtual-camera.md).
+
 ## Architecture — a two-rate pipeline + zero-leak buffer
 
 - **Every frame (render thread):** capture the source into a GPU ring buffer and
