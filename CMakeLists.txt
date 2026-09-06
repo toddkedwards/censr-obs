@@ -170,6 +170,46 @@ if(WIN32)
     set_target_properties(
       censr-vcam-probe PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
     )
+
+    # --- Media Foundation virtual camera device (Phase 2) -------------------
+    # In-proc COM media source DLL that serves the shared redacted-frame stream
+    # as a system camera, plus a control tool that registers/creates it. Needs
+    # Windows 11 (mfvirtualcamera.h). Registering/creating the camera is a
+    # system change the USER runs, elevated + signed (see docs).
+    add_library(
+      censr-mfcam SHARED
+      src/vcam/dllmain.cpp
+      src/vcam/media_source.cpp
+      src/vcam/guid.cpp
+      src/host/shared_frame.cpp
+    )
+    target_include_directories(
+      censr-mfcam PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/vcam"
+                          "${CMAKE_CURRENT_SOURCE_DIR}/src/host"
+    )
+    target_link_libraries(
+      censr-mfcam PRIVATE mfplat mf mfuuid ole32 runtimeobject
+    )
+    target_link_options(
+      censr-mfcam PRIVATE
+      "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/src/vcam/censr-mfcam.def"
+    )
+    target_compile_definitions(censr-mfcam PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    set_target_properties(
+      censr-mfcam PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
+    )
+
+    add_executable(censr-vcam src/vcam/control.cpp)
+    target_include_directories(
+      censr-vcam PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/vcam"
+    )
+    target_link_libraries(
+      censr-vcam PRIVATE mfplat mfsensorgroup ole32 runtimeobject
+    )
+    target_compile_definitions(censr-vcam PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    set_target_properties(
+      censr-vcam PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
+    )
   endif()
 endif()
 

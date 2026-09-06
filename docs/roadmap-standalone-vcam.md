@@ -151,11 +151,30 @@ The backbone both device backends will consume is built and proven:
   free, sequence advances; a ctest). End-to-end verified: host publishes 1920×1080
   BGRA, a separate probe process reads ~20 fps of live redacted frames.
 
-**Still to do for Phase 2:** the actual **DirectShow source filter** (and/or MF
-`MFCreateVirtualCamera` media source) that reads this ring and registers as a system
-camera, plus the signed installer that registers it. That is the part that needs a
-real code-signing cert and elevated/MSIX install, and cross-app testing — see the
-device-backend and signing notes above.
+### Phase 2 progress — the MF virtual camera device (skeleton built)
+
+`src/vcam/` — an MF software camera backed by the shared frame stream:
+
+- `media_source.{h,cpp}` — `CensrSource` (`IMFMediaSourceEx`) + `CensrStream`
+  (`IMFMediaStream`) serving 1920×1080@30 **RGB32** (== BGRA, so host frames copy in
+  directly, scaled as needed). Reads the ring via `SharedFrameReader`; shows a dark
+  placeholder until the host is up.
+- `dllmain.cpp` + `censr-mfcam.def` + `guid.cpp` — the in-proc COM server
+  (class factory, `DllGetClassObject`, `DllRegister/UnregisterServer`).
+- `control.cpp` (`censr-vcam.exe`) — registers the server and calls
+  `MFCreateVirtualCamera` to create/remove "Censr Virtual Camera".
+
+Verified: **compiles and links against the real MF virtual-camera API** (SDK
+10.0.26100), the DLL exports a valid COM server, and the control tool runs. **Not
+yet runtime-validated** inside a real camera app — that needs the elevated, signed
+install in `docs/virtual-camera-install.md` plus a Win11 capture app, and is where a
+from-scratch MF media source typically needs attribute/media-type iteration.
+
+**Still to do for Phase 2:** validate + tune the MF source in real apps; add the
+**DirectShow source filter** for apps that bypass the Frame Server; and fold the DLL
++ tool + host into the **signed installer** that registers on install. That is the
+part that needs a real code-signing cert and elevated/MSIX install — see the
+device-backend and signing notes above and `docs/virtual-camera-install.md`.
 
 ## Open questions to settle before Phase 2
 
