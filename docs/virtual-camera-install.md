@@ -23,6 +23,27 @@ frames `censr-host` publishes to shared memory.
 
 Build them with `-DCENSR_BUILD_HOST=ON`.
 
+## Build the signed installer
+
+`tools/package.py --app --installer` stages the app components (`censr-host.exe`,
+`censr-mfcam.dll`, `censr-dshowcam.dll`, `censr-vcam.exe` + the ONNX Runtime DLLs
+the host needs), **signs each binary**, and builds
+`dist/censr-vcam-<ver>-windows-x64-installer.exe` from `packaging/censr-app.iss`.
+The installer drops everything in `Program Files\Censr` and, on install (elevated),
+registers **both** cameras — MF via `censr-vcam install`, DirectShow via
+`regsvr32` — and unregisters them on uninstall.
+
+```bat
+cmake --preset windows-x64-local -DCENSR_BUILD_HOST=ON
+cmake --build --preset windows-x64-local
+set CENSR_SIGN_PFX=C:\path\to\cert.pfx        REM or CENSR_TS_* for Trusted Signing
+set CENSR_SIGN_PASSWORD=...
+python tools\package.py --app --installer      REM needs Inno Setup for the .exe
+```
+
+Without the signing env the binaries are packaged **unsigned** (the cameras won't
+load); without Inno Setup you still get `dist\censr-vcam-<ver>-windows-x64.zip`.
+
 ## Sign first (required in practice)
 
 Windows will not let the Frame Server load an unsigned camera media source on most

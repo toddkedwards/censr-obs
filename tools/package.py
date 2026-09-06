@@ -27,18 +27,23 @@ def cmake_exe():
     sys.exit("cmake not found")
 
 
-def build_installer():
+def find_iscc():
     import glob
     cands = (glob.glob(r"C:\Program Files*\Inno Setup*\ISCC.exe") +
              glob.glob(os.path.join(os.environ.get("LOCALAPPDATA", ""),
                                     r"Programs\Inno Setup*\ISCC.exe")))
-    iscc = next((c for c in cands if os.path.exists(c)), shutil.which("iscc"))
+    return next((c for c in cands if os.path.exists(c)), shutil.which("iscc"))
+
+
+def build_installer(iss="censr.iss"):
+    iscc = find_iscc()
     if not iscc:
         print("Inno Setup (ISCC) not found; skipping installer.")
         print("  Install with: winget install JRSoftware.InnoSetup")
-        return
-    print("Building installer with Inno Setup ...")
-    subprocess.run([iscc, os.path.join(ROOT, "packaging", "censr.iss")], check=True)
+        return False
+    print(f"Building installer with Inno Setup ({iss}) ...")
+    subprocess.run([iscc, os.path.join(ROOT, "packaging", iss)], check=True)
+    return True
 
 
 def find_signtool():
@@ -116,12 +121,67 @@ def sign_file(path, cfg, signtool):
     print(f"  signed {os.path.basename(path)}")
 
 
+def package_app(name, version, build_dir, config, cfg, signtool, installer):
+    """Stage + sign the standalone app + virtual-camera components (the CMake
+    'app' install component; present only when built with -DCENSR_BUILD_HOST=ON)
+    and zip them, optionally building the signed app installer."""
+    stage = os.path.join(ROOT, "dist", "stage-app")
+    if os.path.exists(stage):
+        shutil.rmtree(stage)
+    os.makedirs(stage)
+
+    print(f"\nInstalling {name} app components -> {stage}")
+    subprocess.run([cmake_exe(), "--install", os.path.join(ROOT, build_dir),
+                    "--config", config, "--component", "app",
+                    "--prefix", stage], check=True)
+
+    app_root = os.path.join(stage, "censr-app")
+    if not os.path.isdir(app_root):
+        print("No app components found (build with -DCENSR_BUILD_HOST=ON to "
+              "include the host + virtual cameras); skipping app package.")
+        return
+
+    # Sign every binary the installer will register/run (camera DLLs MUST be
+    # signed or Windows won't load them).
+    binaries = ["censr-host.exe", "censr-vcam.exe", "censr-mfcam.dll",
+                "censr-dshowcam.dll"]
+    if cfg:
+        print("Signing app binaries ...")
+        for b in binaries:
+            p = os.path.join(app_root, b)
+            if os.path.exists(p):
+                sign_file(p, cfg, signtool)
+    else:
+        print("(app binaries unsigned — the virtual cameras will not load "
+              "without a trusted signature)")
+
+    out = os.path.join(ROOT, "dist", f"censr-vcam-{version}-windows-x64.zip")
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for base, _, files in os.walk(app_root):
+            for f in files:
+                full = os.path.join(base, f)
+                z.write(full, os.path.relpath(full, stage))
+    print(f"Packaged app: {out}")
+
+    if installer:
+        if build_installer("censr-app.iss") and cfg:
+            exe = os.path.join(
+                ROOT, "dist",
+                f"censr-vcam-{version}-windows-x64-installer.exe")
+            if os.path.exists(exe):
+                print("Signing app installer ...")
+                sign_file(exe, cfg, signtool)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="RelWithDebInfo")
     ap.add_argument("--build-dir", default="build_x64")
     ap.add_argument("--installer", action="store_true",
                     help="also build an Inno Setup installer .exe")
+    ap.add_argument("--app", action="store_true",
+                    help="also package the standalone app + virtual cameras "
+                         "(requires a -DCENSR_BUILD_HOST=ON build)")
     args = ap.parse_args()
 
     spec = json.load(open(os.path.join(ROOT, "buildspec.json"), encoding="utf-8"))
@@ -192,6 +252,10 @@ def main():
             if os.path.exists(installer):
                 print("Signing installer ...")
                 sign_file(installer, cfg, signtool)
+
+    if args.app:
+        package_app(name, version, args.build_dir, args.config, cfg, signtool,
+                    args.installer)
 
 
 if __name__ == "__main__":

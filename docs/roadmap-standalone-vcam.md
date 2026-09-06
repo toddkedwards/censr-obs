@@ -178,10 +178,19 @@ under `CLSID_VideoInputDeviceCategory`, serving the same shared stream as RGB32.
 server (`regsvr32`-registerable); like the MF source it is not yet validated in a
 real capture app.
 
+The **signed installer** is also wired: CMake install rules stage the app
+components (host + both camera DLLs + control tool + ORT DLLs) as the `app`
+component; `tools/package.py --app --installer` signs each binary and builds
+`packaging/censr-app.iss` into `dist/censr-vcam-<ver>-windows-x64-installer.exe`,
+which installs to `Program Files\Censr` and **registers both cameras on install**
+(MF via `censr-vcam install`, DirectShow via `regsvr32`), unregistering on
+uninstall. Verified: `cmake --install --component app` stages all six payload
+files and the zip is produced; building the `.exe` needs Inno Setup and signing
+needs the cert (both the user's step).
+
 **Still to do for Phase 2:** runtime-validate + tune **both** sources in real apps
-(MF media-type attributes; DirectShow connection/allocator negotiation), and fold
-the DLLs + tool + host into the **signed installer** that registers on install —
-the part that needs a real code-signing cert and elevated/MSIX install. See the
+(MF media-type attributes; DirectShow connection/allocator negotiation) with a real
+signing cert; optionally wire the app build into the release workflow. See the
 device-backend and signing notes above and `docs/virtual-camera-install.md`.
 
 ## Open questions to settle before Phase 2

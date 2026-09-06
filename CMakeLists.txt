@@ -237,6 +237,15 @@ if(WIN32)
     set_target_properties(
       censr-dshowcam PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
     )
+
+    # Install rules for the standalone app + virtual-camera components (the "app"
+    # component; the ORT DLLs it needs are added in the ONNX block below). Staged
+    # by tools/package.py into the signed app installer (packaging/censr-app.iss).
+    install(
+      TARGETS censr-host censr-vcam censr-mfcam censr-dshowcam
+      RUNTIME DESTINATION censr-app COMPONENT app
+      LIBRARY DESTINATION censr-app COMPONENT app
+    )
   endif()
 endif()
 
@@ -332,6 +341,8 @@ if(TARGET censr-host)
       "$<TARGET_FILE_DIR:censr-host>"
     VERBATIM
   )
+  # ...and in the app installer payload.
+  install(FILES ${_censr_ort_dlls} DESTINATION censr-app COMPONENT app)
 endif()
 endif() # WIN32 (ONNX Runtime)
 
