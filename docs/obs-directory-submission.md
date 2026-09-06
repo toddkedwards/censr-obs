@@ -14,7 +14,7 @@ editor accepts formatting — adapt headings to BBCode if you like).
 | **Title** | Censr — Real-Time Secret Redaction |
 | **Tag line** | Automatically cover API keys, passwords, emails & QR codes — on stream or in any video call — in real time, with opaque fills. |
 | **Category** | OBS Studio Plugins |
-| **Version** | 0.1.1 |
+| **Version** | 0.2.0 |
 | **License** | GPL-2.0-or-later |
 | **Compatibility** | OBS Studio 31.1.1 or newer (built against 31.1.1; tested on 32.2); Windows 10/11 (x64). A macOS universal build is available from source. |
 | **Download / external URL** | https://github.com/toddkedwards/censr-obs/releases/latest |
@@ -115,7 +115,7 @@ the webcam in a Zoom/Meet call reinforces the "works in any app" angle.
 
 ## Pre-submission checklist
 
-- [ ] A published GitHub release exists (v0.1.1 ✓) with the zip attached.
+- [ ] A published GitHub release exists (v0.2.0 ✓) with the zip attached.
 - [ ] OBS forum account created and verified.
 - [ ] Screenshots exported/ready to upload.
 - [ ] Decide: host the zip on the forum, or link to the GitHub release (link is

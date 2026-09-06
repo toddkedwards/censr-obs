@@ -5,7 +5,7 @@
 ; Program Files\Censr and registers the MF + DirectShow virtual cameras.
 
 #define MyAppName "Censr Virtual Camera"
-#define MyAppVersion "0.1.1"
+#define MyAppVersion "0.2.0"
 #define MyPublisher "Todd Edwards"
 
 [Setup]
