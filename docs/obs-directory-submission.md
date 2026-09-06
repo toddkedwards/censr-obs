@@ -12,7 +12,7 @@ editor accepts formatting — adapt headings to BBCode if you like).
 | Field | Value |
 |---|---|
 | **Title** | Censr — Real-Time Secret Redaction |
-| **Tag line** | Automatically cover API keys, passwords, emails & QR codes on your stream, in real time, with opaque fills. |
+| **Tag line** | Automatically cover API keys, passwords, emails & QR codes — on stream or in any video call — in real time, with opaque fills. |
 | **Category** | OBS Studio Plugins |
 | **Version** | 0.1.1 |
 | **License** | GPL-2.0-or-later |
@@ -60,6 +60,18 @@ A two-rate pipeline keeps it real-time:
 - Everything runs **locally**. No network calls, no telemetry, nothing leaves
   your machine.
 
+### Not just for streaming — use it in any app
+
+You don't have to be live-streaming to benefit. Add Censr to a source, click
+**Start Virtual Camera** in OBS, and select **"OBS Virtual Camera"** as your webcam
+in **Zoom, Google Meet, Microsoft Teams, Discord** — anything that takes a camera.
+The feed is redacted before it leaves your machine, so a screen-share in a meeting
+gets the same protection as a stream. (Tip: present *as the Virtual Camera* rather
+than the app's native screen-share, which bypasses the filter.)
+
+*Coming soon:* a standalone **Censr Virtual Camera** app that does this without OBS
+running — same redaction engine, its own system webcam. In development on GitHub.
+
 ### Requirements
 
 - Windows 10/11 (x64) and OBS Studio 31.x.
@@ -71,6 +83,9 @@ A two-rate pipeline keeps it real-time:
 2. Run the installer, **or** extract the zip into
    `%ProgramData%\obs-studio\plugins\`.
 3. Reopen OBS, right-click a source → **Filters** → **+** → **Censr Redaction**.
+
+To use the redacted feed in a meeting app, also see the short guide
+[Use Censr in any app](https://github.com/toddkedwards/censr-obs/blob/main/docs/use-anywhere-virtual-camera.md).
 
 ### Privacy & limitations (please read)
 
@@ -95,7 +110,8 @@ Upload as screenshots (the forum shows the first as the thumbnail):
 3. Optional: a per-word redaction shot (`tools/out/perword.png` if kept).
 
 A short screen-recording GIF (secret appears → instantly covered) makes a strong
-first impression if you can capture one.
+first impression if you can capture one. A clip of the redacted feed showing up as
+the webcam in a Zoom/Meet call reinforces the "works in any app" angle.
 
 ## Pre-submission checklist
 
