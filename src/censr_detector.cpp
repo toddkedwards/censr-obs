@@ -4,12 +4,11 @@ Copyright (C) 2026 Todd Edwards
 SPDX-License-Identifier: GPL-2.0-or-later
 */
 
-#include <util/base.h>
 
 #include "censr_detector.h"
 #include "secret_rules.h"
 #include "qr_zxing.h"
-#include "plugin-support.h"
+#include "censr_log.h"
 
 #ifdef _WIN32
 #include <winrt/Windows.Foundation.h>
@@ -122,18 +121,18 @@ void Detector::run()
 	if (want_onnx) {
 		ocr_ = create_onnx_ocr(det_model_, rec_model_);
 		if (ocr_)
-			obs_log(LOG_INFO, "Censr detector: using GPU OCR (ONNX/DirectML)");
+			censr_log(LOG_INFO, "Censr detector: using GPU OCR (ONNX/DirectML)");
 	}
 	if (!ocr_) {
 		ocr_ = create_winrt_ocr();
 		if (ocr_)
-			obs_log(LOG_INFO, "Censr detector: using Windows.Media.Ocr");
+			censr_log(LOG_INFO, "Censr detector: using Windows.Media.Ocr");
 	}
 #else
 	ocr_ = create_vision_ocr();
 #endif
 	if (!ocr_)
-		obs_log(LOG_WARNING, "Censr detector: OCR unavailable, text redaction disabled");
+		censr_log(LOG_WARNING, "Censr detector: OCR unavailable, text redaction disabled");
 
 	std::vector<uint8_t> bgra;
 	std::vector<uint8_t> ocr_bgra;

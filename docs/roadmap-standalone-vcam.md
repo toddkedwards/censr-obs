@@ -22,6 +22,12 @@ What's OBS-specific and must be **rebuilt** (all inside `censr-filter.cpp` today
 GPU frame capture, the zero-leak ring/delay buffer, the cover compositor (libobs
 `gs_*`), and the properties UI.
 
+**Phase 0 is done** — the engine now builds as a standalone `censr-core` static
+library (`add_library(censr-core STATIC …)`) that the plugin links; it carries its
+own `censr_log` shim (`src/censr_log.{h,cpp}`) instead of calling libobs, so it has
+no `obs`/`util/*` includes. The plugin installs a handler forwarding core logs to
+`obs_log`. The standalone host will link the same `censr-core`.
+
 ## Target architecture — 3 pieces
 
 ```
@@ -92,7 +98,7 @@ a cleaner story for the paid Lemon Squeezy SKU than the plugin.
 
 | Phase | Deliverable | Risk |
 |---|---|---|
-| **0** | Extract `censr-core` static lib; OBS plugin links it (no behavior change) | low |
+| **0 ✅** | Extract `censr-core` static lib; OBS plugin links it (no behavior change) — **done** | low |
 | **1** | `censr-host` MVP: WGC capture → detect → D3D11 cover composite → **preview window** (no vcam). Proves the engine runs outside OBS. | low–med |
 | **2** | Shared-mem ring + **DirectShow** vcam reading it; signed installer that registers it. *This is the "works with everyone" milestone.* | **high** (device reg, signing, cross-app testing) |
 | **3** | **MF** virtual camera variant + MSIX for modern Win11 apps | high |

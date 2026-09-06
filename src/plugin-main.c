@@ -20,12 +20,20 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 
 #include "censr-filter.h"
+#include "censr_log.h"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
+/* Route censr-core's log messages into OBS's log. */
+static void censr_log_to_obs(int level, const char *msg)
+{
+	obs_log(level, "%s", msg);
+}
+
 bool obs_module_load(void)
 {
+	censr_set_log_handler(censr_log_to_obs);
 	censr_register_filter();
 	obs_log(LOG_INFO, "Censr plugin loaded successfully (version %s)", PLUGIN_VERSION);
 	return true;

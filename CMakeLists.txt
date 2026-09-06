@@ -34,28 +34,49 @@ if(ENABLE_QT)
   )
 endif()
 
-target_sources(
-  ${CMAKE_PROJECT_NAME}
-  PRIVATE
-    src/plugin-main.c
-    src/censr-filter.cpp
-    src/censr_detector.cpp
-    src/secret_rules.cpp
-    src/qr_zxing.cpp
+# ---------------------------------------------------------------------------
+# censr-core — the redaction engine (detection worker, OCR backends, secret
+# rules, QR). It has NO libobs dependency (logging goes through censr_log), so
+# it is linked by both the OBS plugin and the future standalone virtual-camera
+# host. See docs/roadmap-standalone-vcam.md.
+# ---------------------------------------------------------------------------
+add_library(
+  censr-core STATIC
+  src/censr_detector.cpp
+  src/secret_rules.cpp
+  src/qr_zxing.cpp
+  src/censr_log.cpp
+)
+target_include_directories(censr-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+set_target_properties(
+  censr-core
+  PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    POSITION_INDEPENDENT_CODE ON
 )
 
 # Platform OCR backend: Windows.Media.Ocr (+ optional ONNX GPU OCR) on Windows,
 # Vision on macOS. All implement ICensrOcr; the rest of the pipeline is neutral.
 if(WIN32)
-  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/ocr_winrt.cpp src/onnx_ocr.cpp)
+  target_sources(censr-core PRIVATE src/ocr_winrt.cpp src/onnx_ocr.cpp)
 elseif(APPLE)
-  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/ocr_vision.mm)
+  target_sources(censr-core PRIVATE src/ocr_vision.mm)
   set_source_files_properties(src/ocr_vision.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   target_link_libraries(
-    ${CMAKE_PROJECT_NAME}
+    censr-core
     PRIVATE "-framework Vision" "-framework CoreGraphics" "-framework Foundation"
   )
 endif()
+
+# The OBS plugin proper: OBS glue only; the engine comes from censr-core.
+target_sources(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE
+    src/plugin-main.c
+    src/censr-filter.cpp
+)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE censr-core)
 
 set_target_properties(
   ${CMAKE_PROJECT_NAME}
@@ -72,12 +93,12 @@ if(WIN32)
   list(REVERSE _censr_cppwinrt_dirs)
   if(_censr_cppwinrt_dirs)
     list(GET _censr_cppwinrt_dirs 0 _censr_cppwinrt)
-    target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${_censr_cppwinrt}")
+    target_include_directories(censr-core PRIVATE "${_censr_cppwinrt}")
     message(STATUS "Censr: C++/WinRT headers at ${_censr_cppwinrt}")
   else()
     message(FATAL_ERROR "Censr: could not find C++/WinRT (cppwinrt) headers in the Windows SDK")
   endif()
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE WindowsApp)
+  target_link_libraries(censr-core PRIVATE WindowsApp)
 endif()
 
 # --- ZXing-cpp (QR / barcode detection) via FetchContent ---
@@ -114,7 +135,7 @@ if(TARGET ZXing)
     target_compile_options(ZXing PRIVATE -Wno-shorten-64-to-32 -Wno-error)
   endif()
 endif()
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ZXing::ZXing)
+target_link_libraries(censr-core PRIVATE ZXing::ZXing)
 
 # --- ONNX Runtime for GPU OCR (Windows only; macOS uses Vision) ---
 if(WIN32)
@@ -124,16 +145,16 @@ if(WIN32)
 option(CENSR_ORT_GPU "Use the CUDA/TensorRT ONNX Runtime build instead of DirectML" OFF)
 if(CENSR_ORT_GPU)
   set(CENSR_ORT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ort-gpu")
-  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE CENSR_ORT_GPU)
+  target_compile_definitions(censr-core PRIVATE CENSR_ORT_GPU)
   set(_censr_ort_label "CUDA/TensorRT")
 else()
   set(CENSR_ORT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ort-directml")
   set(_censr_ort_label "DirectML")
 endif()
 if(EXISTS "${CENSR_ORT_DIR}/build/native/include/onnxruntime_cxx_api.h")
-  target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+  target_include_directories(censr-core PRIVATE
     "${CENSR_ORT_DIR}/build/native/include")
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
+  target_link_libraries(censr-core PRIVATE
     "${CENSR_ORT_DIR}/runtimes/win-x64/native/onnxruntime.lib")
   message(STATUS "Censr: ONNX Runtime (${_censr_ort_label}) at ${CENSR_ORT_DIR}")
 else()

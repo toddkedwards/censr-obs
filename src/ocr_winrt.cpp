@@ -6,10 +6,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 /* Windows.Media.Ocr implementation of ICensrOcr via C++/WinRT. */
 
-#include <util/base.h>
 
 #include "ocr_engine.h"
-#include "plugin-support.h"
+#include "censr_log.h"
 
 #include <algorithm>
 
@@ -90,7 +89,7 @@ public:
 				out.push_back(std::move(ol));
 			}
 		} catch (hresult_error const &e) {
-			obs_log(LOG_WARNING, "Censr OCR error: 0x%08x %s",
+			censr_log(LOG_WARNING, "Censr OCR error: 0x%08x %s",
 				(unsigned)e.code(), to_string(e.message()).c_str());
 		}
 		return out;
@@ -112,14 +111,14 @@ std::unique_ptr<ICensrOcr> create_winrt_ocr()
 				engine = OcrEngine::TryCreateFromLanguage(en);
 		}
 		if (!engine) {
-			obs_log(LOG_WARNING,
+			censr_log(LOG_WARNING,
 				"Censr: no Windows OCR engine for installed languages");
 			return nullptr;
 		}
-		obs_log(LOG_INFO, "Censr: Windows.Media.Ocr engine ready");
+		censr_log(LOG_INFO, "Censr: Windows.Media.Ocr engine ready");
 		return std::make_unique<WinRtOcr>(std::move(engine));
 	} catch (winrt::hresult_error const &e) {
-		obs_log(LOG_WARNING, "Censr: OCR init failed: 0x%08x",
+		censr_log(LOG_WARNING, "Censr: OCR init failed: 0x%08x",
 			(unsigned)e.code());
 		return nullptr;
 	}

@@ -21,10 +21,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#include <util/base.h>
 
 #include "ocr_engine.h"
-#include "plugin-support.h"
+#include "censr_log.h"
 
 #include <windows.h>
 
@@ -129,10 +128,10 @@ void append_ep(Ort::SessionOptions &so)
 			OrtTensorRTProviderOptions o{};
 			o.device_id = 0;
 			so.AppendExecutionProvider_TensorRT(o);
-			obs_log(LOG_INFO, "Censr: ONNX execution provider = TensorRT");
+			censr_log(LOG_INFO, "Censr: ONNX execution provider = TensorRT");
 			return;
 		} catch (const Ort::Exception &e) {
-			obs_log(LOG_WARNING,
+			censr_log(LOG_WARNING,
 				"Censr: TensorRT EP unavailable (%s); trying CUDA",
 				e.what());
 			pref = "cuda";
@@ -143,19 +142,19 @@ void append_ep(Ort::SessionOptions &so)
 			OrtCUDAProviderOptions o{};
 			o.device_id = 0;
 			so.AppendExecutionProvider_CUDA(o);
-			obs_log(LOG_INFO, "Censr: ONNX execution provider = CUDA");
+			censr_log(LOG_INFO, "Censr: ONNX execution provider = CUDA");
 			return;
 		} catch (const Ort::Exception &e) {
-			obs_log(LOG_WARNING,
+			censr_log(LOG_WARNING,
 				"Censr: CUDA EP unavailable (%s); using CPU", e.what());
 		}
 	}
-	obs_log(LOG_INFO, "Censr: ONNX execution provider = CPU");
+	censr_log(LOG_INFO, "Censr: ONNX execution provider = CPU");
 #else
 	so.SetExecutionMode(ORT_SEQUENTIAL);
 	so.DisableMemPattern();
 	Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_DML(so, 0));
-	obs_log(LOG_INFO, "Censr: ONNX execution provider = DirectML");
+	censr_log(LOG_INFO, "Censr: ONNX execution provider = DirectML");
 #endif
 }
 
@@ -187,7 +186,7 @@ public:
 		}
 		chars_.push_back(" "); /* trailing space class */
 
-		obs_log(LOG_INFO,
+		censr_log(LOG_INFO,
 			"Censr: ONNX PP-OCRv4 ready, %zu character classes",
 			chars_.size());
 	}
@@ -214,7 +213,7 @@ public:
 		try {
 			boxes = detect(bgr.data(), w, h);
 		} catch (const Ort::Exception &e) {
-			obs_log(LOG_WARNING, "Censr ONNX det error: %s", e.what());
+			censr_log(LOG_WARNING, "Censr ONNX det error: %s", e.what());
 			return lines;
 		}
 
@@ -223,7 +222,7 @@ public:
 			try {
 				text = recognize_crop(bgr.data(), w, h, b);
 			} catch (const Ort::Exception &e) {
-				obs_log(LOG_WARNING, "Censr ONNX rec error: %s",
+				censr_log(LOG_WARNING, "Censr ONNX rec error: %s",
 					e.what());
 				continue;
 			}
@@ -435,10 +434,10 @@ std::unique_ptr<ICensrOcr> create_onnx_ocr(const std::string &det_model,
 	try {
 		return std::make_unique<OnnxOcr>(det_model, rec_model);
 	} catch (const Ort::Exception &e) {
-		obs_log(LOG_WARNING, "Censr: ONNX OCR init failed: %s", e.what());
+		censr_log(LOG_WARNING, "Censr: ONNX OCR init failed: %s", e.what());
 		return nullptr;
 	} catch (const std::exception &e) {
-		obs_log(LOG_WARNING, "Censr: ONNX OCR init failed: %s", e.what());
+		censr_log(LOG_WARNING, "Censr: ONNX OCR init failed: %s", e.what());
 		return nullptr;
 	}
 }

@@ -9,10 +9,9 @@ SPDX-License-Identifier: GPL-2.0-or-later
  * detection stack the pipeline was built on. No apartment/threading setup, unlike
  * the Windows.Media.Ocr backend. */
 
-#include <util/base.h>
 
 #include "ocr_engine.h"
-#include "plugin-support.h"
+#include "censr_log.h"
 
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -75,7 +74,7 @@ public:
 			[handler performRequests:@[ req ] error:&err];
 			CGImageRelease(image);
 			if (err) {
-				obs_log(LOG_WARNING, "Censr Vision OCR error: %s",
+				censr_log(LOG_WARNING, "Censr Vision OCR error: %s",
 					err.localizedDescription.UTF8String);
 				return out;
 			}
@@ -123,7 +122,7 @@ public:
 
 std::unique_ptr<ICensrOcr> create_vision_ocr()
 {
-	obs_log(LOG_INFO, "Censr: macOS Vision OCR engine ready");
+	censr_log(LOG_INFO, "Censr: macOS Vision OCR engine ready");
 	return std::make_unique<VisionOcr>();
 }
 
