@@ -48,7 +48,7 @@ Components (`src/`):
 | `censr-filter.cpp` | OBS filter: per-frame cover draw, GPU readback, cover set + TTL |
 | `censr_detector.*` | Async detection worker (latest-frame-wins) |
 | `ocr_engine.h` | `ICensrOcr` interface (engine swap point) |
-| `onnx_ocr.cpp` | **GPU OCR** — PP-OCRv4 (DBNet + CRNN) on ONNX Runtime + DirectML |
+| `onnx_ocr.cpp` | **GPU OCR** — PP-OCRv4 (DBNet + CRNN) on ONNX Runtime (DirectML default; CUDA/TensorRT optional) |
 | `ocr_winrt.cpp` | Fallback OCR via `Windows.Media.Ocr` (C++/WinRT) |
 | `secret_rules.*` | Data-driven secret patterns (keys, labels, emails, entropy) |
 | `qr_zxing.cpp` | QR / barcode detection via [ZXing-cpp](https://github.com/zxing-cpp/zxing-cpp) |
@@ -93,6 +93,21 @@ cmake --preset windows-x64-local      # downloads OBS deps + ZXing, configures
 cmake --build --preset windows-x64-local
 ```
 
+**GPU OCR backend.** By default OCR runs on ONNX Runtime's **DirectML** provider
+(any DX12 GPU, no CUDA install). To instead use **CUDA/TensorRT**, fetch that ORT
+build and configure with the option (also requires the CUDA Toolkit + cuDNN, and
+TensorRT for the TensorRT provider, installed on the machine):
+
+```bash
+python tools/fetch_gpu_ocr.py --gpu          # adds third_party/ort-gpu
+cmake --preset windows-x64-local -DCENSR_ORT_GPU=ON
+cmake --build --preset windows-x64-local
+```
+
+At runtime the CUDA/TensorRT build picks TensorRT → CUDA → CPU (override with
+`CENSR_ORT_EP=tensorrt|cuda`); deploy `onnxruntime.dll` + `onnxruntime_providers_*.dll`
+next to `censr.dll`.
+
 **Deploy** to the per-user OBS plugin folder (no admin needed):
 
 ```
@@ -128,7 +143,7 @@ travel — the cover tracks with near-zero leak).
 
 ## Roadmap
 
-- Optional CUDA/TensorRT execution provider for the OCR models.
+- Signed installer / packaged release.
 
 ## License
 

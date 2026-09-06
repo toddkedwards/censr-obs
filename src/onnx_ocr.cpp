@@ -32,13 +32,16 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <queue>
 #include <string>
 #include <vector>
 
 #include <onnxruntime_cxx_api.h>
+#ifndef CENSR_ORT_GPU
 #include <dml_provider_factory.h>
+#endif
 
 namespace censr {
 
@@ -113,15 +116,56 @@ void resize_bgr(const uint8_t *src, int sw, int sh, uint8_t *dst, int dw, int dh
 	}
 }
 
+/* Configure the GPU execution provider. Default build uses DirectML (runs on any
+ * DX12 GPU, no CUDA install). A -DCENSR_ORT_GPU=ON build links the CUDA/TensorRT
+ * ONNX Runtime and picks TensorRT -> CUDA -> CPU, honoring CENSR_ORT_EP. */
+void append_ep(Ort::SessionOptions &so)
+{
+#ifdef CENSR_ORT_GPU
+	const char *sel = getenv("CENSR_ORT_EP");
+	std::string pref = sel ? sel : "tensorrt";
+	if (pref == "tensorrt") {
+		try {
+			OrtTensorRTProviderOptions o{};
+			o.device_id = 0;
+			so.AppendExecutionProvider_TensorRT(o);
+			obs_log(LOG_INFO, "Censr: ONNX execution provider = TensorRT");
+			return;
+		} catch (const Ort::Exception &e) {
+			obs_log(LOG_WARNING,
+				"Censr: TensorRT EP unavailable (%s); trying CUDA",
+				e.what());
+			pref = "cuda";
+		}
+	}
+	if (pref == "cuda") {
+		try {
+			OrtCUDAProviderOptions o{};
+			o.device_id = 0;
+			so.AppendExecutionProvider_CUDA(o);
+			obs_log(LOG_INFO, "Censr: ONNX execution provider = CUDA");
+			return;
+		} catch (const Ort::Exception &e) {
+			obs_log(LOG_WARNING,
+				"Censr: CUDA EP unavailable (%s); using CPU", e.what());
+		}
+	}
+	obs_log(LOG_INFO, "Censr: ONNX execution provider = CPU");
+#else
+	so.SetExecutionMode(ORT_SEQUENTIAL);
+	so.DisableMemPattern();
+	Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_DML(so, 0));
+	obs_log(LOG_INFO, "Censr: ONNX execution provider = DirectML");
+#endif
+}
+
 class OnnxOcr : public ICensrOcr {
 public:
 	OnnxOcr(const std::string &det_model, const std::string &rec_model)
 		: env_(ORT_LOGGING_LEVEL_WARNING, "censr")
 	{
 		Ort::SessionOptions so;
-		so.SetExecutionMode(ORT_SEQUENTIAL);
-		so.DisableMemPattern();
-		Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_DML(so, 0));
+		append_ep(so);
 
 		det_ = Ort::Session(env_, to_wstring(det_model).c_str(), so);
 		rec_ = Ort::Session(env_, to_wstring(rec_model).c_str(), so);

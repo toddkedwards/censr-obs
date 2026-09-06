@@ -44,7 +44,22 @@ def fetch_models():
         print(f"  {name}")
 
 
+def fetch_ort_gpu():
+    """CUDA/TensorRT ONNX Runtime for a -DCENSR_ORT_GPU=ON build. Also requires
+    CUDA Toolkit + cuDNN (+ TensorRT) installed on the machine at runtime."""
+    print("Fetching ONNX Runtime GPU (CUDA/TensorRT) ...")
+    # Native libs (dlls, providers, .lib) + headers.
+    download(f"https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.Gpu.Windows/{ORT_VER}",
+             os.path.join(TP, "ort-gpu"))
+    download(f"https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.Gpu/{ORT_VER}",
+             os.path.join(TP, "ort-gpu"))
+    print("  Fetched to third_party/ort-gpu. The CUDA/TensorRT build additionally")
+    print("  needs CUDA Toolkit + cuDNN (+ TensorRT) installed; then build with")
+    print("  -DCENSR_ORT_GPU=ON and deploy onnxruntime.dll + onnxruntime_providers_*.dll.")
+
+
 def main():
+    import sys
     fetch_models()
     print("Fetching ONNX Runtime (DirectML) ...")
     download(f"https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/{ORT_VER}",
@@ -52,6 +67,8 @@ def main():
     print("Fetching DirectML runtime ...")
     download(f"https://www.nuget.org/api/v2/package/Microsoft.AI.DirectML/{DML_VER}",
              os.path.join(TP, "directml"))
+    if "--gpu" in sys.argv:
+        fetch_ort_gpu()
     print("Done. Now: cmake --preset windows-x64-local && cmake --build --preset windows-x64-local")
 
 

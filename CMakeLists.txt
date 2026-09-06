@@ -89,16 +89,27 @@ FetchContent_MakeAvailable(ZXing)
 set(CMAKE_COMPILE_WARNING_AS_ERROR ${_censr_saved_wae})
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ZXing::ZXing)
 
-# --- ONNX Runtime (DirectML) for GPU OCR ---
-set(CENSR_ORT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ort-directml")
+# --- ONNX Runtime for GPU OCR ---
+# Default backend is DirectML (any DX12 GPU, no CUDA install). Set
+# -DCENSR_ORT_GPU=ON to instead link the CUDA/TensorRT ONNX Runtime build
+# (third_party/ort-gpu); requires CUDA + cuDNN (+ TensorRT) installed at runtime.
+option(CENSR_ORT_GPU "Use the CUDA/TensorRT ONNX Runtime build instead of DirectML" OFF)
+if(CENSR_ORT_GPU)
+  set(CENSR_ORT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ort-gpu")
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE CENSR_ORT_GPU)
+  set(_censr_ort_label "CUDA/TensorRT")
+else()
+  set(CENSR_ORT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ort-directml")
+  set(_censr_ort_label "DirectML")
+endif()
 if(EXISTS "${CENSR_ORT_DIR}/build/native/include/onnxruntime_cxx_api.h")
   target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     "${CENSR_ORT_DIR}/build/native/include")
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
     "${CENSR_ORT_DIR}/runtimes/win-x64/native/onnxruntime.lib")
-  message(STATUS "Censr: ONNX Runtime (DirectML) at ${CENSR_ORT_DIR}")
+  message(STATUS "Censr: ONNX Runtime (${_censr_ort_label}) at ${CENSR_ORT_DIR}")
 else()
-  message(FATAL_ERROR "Censr: ONNX Runtime not found at ${CENSR_ORT_DIR} (see third_party)")
+  message(FATAL_ERROR "Censr: ONNX Runtime (${_censr_ort_label}) not found at ${CENSR_ORT_DIR} — run tools/fetch_gpu_ocr.py")
 endif()
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
