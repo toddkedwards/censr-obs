@@ -23,9 +23,10 @@ namespace censr {
 
 class WgcCapture {
 public:
-	/* Begin capturing `mon` with `device`. Returns false if WGC is
-	 * unsupported or setup fails. */
-	bool start(ID3D11Device *device, HMONITOR mon);
+	/* Begin capturing a monitor or a window with `device`. Returns false if
+	 * WGC is unsupported or setup fails. */
+	bool start_monitor(ID3D11Device *device, HMONITOR mon);
+	bool start_window(ID3D11Device *device, HWND wnd);
 	void stop();
 
 	/* Drain buffered frames on the render thread and copy the newest into an
@@ -47,6 +48,9 @@ private:
 	winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool pool_{nullptr};
 	winrt::Windows::Graphics::Capture::GraphicsCaptureSession session_{nullptr};
 	winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice rt_device_{nullptr};
+
+	bool start_item(ID3D11Device *device,
+			winrt::Windows::Graphics::Capture::GraphicsCaptureItem item);
 
 	winrt::com_ptr<ID3D11Texture2D> latest_;
 	uint32_t width_ = 0, height_ = 0;

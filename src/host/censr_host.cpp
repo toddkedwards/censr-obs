@@ -20,8 +20,11 @@ See docs/roadmap-standalone-vcam.md.
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <deque>
+#include <iostream>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include <windows.h>
@@ -44,6 +47,7 @@ constexpr uint64_t DELAY_NS = 1200000000ull;            /* zero-leak delay */
 constexpr uint64_t GUARANTEE_MIN_DELAY_NS = 500000000ull;
 constexpr uint64_t SNAPSHOT_KEEP_NS = 3000000000ull;
 constexpr float COVER_PAD = 8.0f;
+constexpr uint32_t DET_MAX_W = 1600; /* OCR runs on a frame no wider than this */
 
 uint64_t now_ns()
 {
@@ -161,6 +165,123 @@ CoverSet covers_for(uint64_t display_ts)
 	return out;
 }
 
+/* ---- source picker ---- */
+struct MonInfo {
+	HMONITOR h;
+	int w, hgt;
+	bool primary;
+};
+struct WinInfo {
+	HWND h;
+	std::string title;
+};
+
+std::vector<MonInfo> enum_monitors()
+{
+	std::vector<MonInfo> mons;
+	EnumDisplayMonitors(
+		nullptr, nullptr,
+		[](HMONITOR h, HDC, LPRECT r, LPARAM lp) -> BOOL {
+			MONITORINFO mi{sizeof(mi)};
+			GetMonitorInfo(h, &mi);
+			((std::vector<MonInfo> *)lp)
+				->push_back({h, (int)(r->right - r->left),
+					     (int)(r->bottom - r->top),
+					     (mi.dwFlags & MONITORINFOF_PRIMARY) != 0});
+			return TRUE;
+		},
+		(LPARAM)&mons);
+	return mons;
+}
+
+std::vector<WinInfo> enum_windows()
+{
+	std::vector<WinInfo> wins;
+	EnumWindows(
+		[](HWND h, LPARAM lp) -> BOOL {
+			if (!IsWindowVisible(h) || IsIconic(h))
+				return TRUE;
+			if (GetWindow(h, GW_OWNER))
+				return TRUE;
+			if (GetWindowLongPtr(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)
+				return TRUE;
+			char t[256];
+			int n = GetWindowTextA(h, t, sizeof(t));
+			if (n <= 0)
+				return TRUE;
+			((std::vector<WinInfo> *)lp)
+				->push_back({h, std::string(t, n)});
+			return TRUE;
+		},
+		(LPARAM)&wins);
+	return wins;
+}
+
+enum class SrcKind { Monitor, Window };
+struct Source {
+	SrcKind kind = SrcKind::Monitor;
+	HMONITOR mon = nullptr;
+	HWND win = nullptr;
+};
+
+/* Resolve the capture source from argv (--monitor N / --window N) or, absent
+ * those, an interactive console list. Falls back to the primary monitor. */
+Source pick_source(int argc, char **argv, const std::vector<MonInfo> &mons,
+		   const std::vector<WinInfo> &wins)
+{
+	Source src;
+	auto primary = [&] {
+		for (const auto &m : mons)
+			if (m.primary)
+				return m.h;
+		return mons.empty() ? (HMONITOR) nullptr : mons[0].h;
+	};
+	src.mon = primary();
+
+	for (int i = 1; i < argc; ++i) {
+		if (!strcmp(argv[i], "--monitor") && i + 1 < argc) {
+			int n = atoi(argv[++i]);
+			if (n >= 0 && n < (int)mons.size()) {
+				src.kind = SrcKind::Monitor;
+				src.mon = mons[n].h;
+			}
+			return src;
+		}
+		if (!strcmp(argv[i], "--window") && i + 1 < argc) {
+			int n = atoi(argv[++i]);
+			if (n >= 0 && n < (int)wins.size()) {
+				src.kind = SrcKind::Window;
+				src.win = wins[n].h;
+			}
+			return src;
+		}
+	}
+
+	/* Interactive. */
+	std::printf("\nSelect a capture source:\n");
+	for (size_t i = 0; i < mons.size(); ++i)
+		std::printf("  m%zu: monitor %dx%d%s\n", i, mons[i].w, mons[i].hgt,
+			    mons[i].primary ? " (primary)" : "");
+	for (size_t i = 0; i < wins.size(); ++i)
+		std::printf("  w%zu: %s\n", i, wins[i].title.c_str());
+	std::printf("Choice (e.g. m0 or w2) [default m-primary]: ");
+	std::fflush(stdout);
+
+	std::string line;
+	std::getline(std::cin, line);
+	if (line.size() >= 2 && (line[0] == 'm' || line[0] == 'w')) {
+		int n = atoi(line.c_str() + 1);
+		if (line[0] == 'm' && n >= 0 && n < (int)mons.size()) {
+			src.kind = SrcKind::Monitor;
+			src.mon = mons[n].h;
+		} else if (line[0] == 'w' && n >= 0 && n < (int)wins.size()) {
+			src.kind = SrcKind::Window;
+			src.win = wins[n].h;
+		}
+	}
+	return src;
+}
+
 /* ---- globals for the window proc ---- */
 bool g_quit = false;
 
@@ -176,9 +297,14 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l)
 
 } // namespace
 
-int main()
+int main(int argc, char **argv)
 {
 	winrt::init_apartment(winrt::apartment_type::multi_threaded);
+
+	/* ---- pick a source before creating our own window (so it's excluded) ---- */
+	auto mons = enum_monitors();
+	auto wins = enum_windows();
+	Source src = pick_source(argc, argv, mons, wins);
 
 	/* ---- window ---- */
 	HINSTANCE inst = GetModuleHandle(nullptr);
@@ -266,8 +392,10 @@ int main()
 
 	/* ---- capture ---- */
 	censr::WgcCapture capture;
-	HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
-	if (!capture.start(device.Get(), mon)) {
+	bool started = src.kind == SrcKind::Window
+			       ? capture.start_window(device.Get(), src.win)
+			       : capture.start_monitor(device.Get(), src.mon);
+	if (!started) {
 		censr_log(LOG_ERROR, "Censr host: could not start capture");
 		return 1;
 	}
@@ -278,8 +406,13 @@ int main()
 
 	/* ---- delay ring (built lazily once we know the capture size) ---- */
 	std::deque<RingSlot> ring;
-	ComPtr<ID3D11Texture2D> staging; /* CPU-readback for detection */
-	uint32_t capW = 0, capH = 0;
+	/* Detection runs on a GPU-downscaled copy (<= DET_MAX_W wide): the frame
+	 * is rendered into detTex, then read back via detStaging. Much cheaper
+	 * than reading back and OCR-ing the full (e.g. 4K) frame; the detector
+	 * scales the boxes back to capture space. */
+	ComPtr<ID3D11Texture2D> detTex, detStaging;
+	ComPtr<ID3D11RenderTargetView> detRtv;
+	uint32_t capW = 0, capH = 0, detW = 0, detH = 0;
 	size_t wanted = (size_t)(DELAY_NS / TICK_INTERVAL_NS);
 
 	auto make_slot = [&](uint32_t w, uint32_t h) {
@@ -327,17 +460,29 @@ int main()
 			ring.clear();
 			for (size_t i = 0; i < wanted; ++i)
 				ring.push_back(make_slot(capW, capH));
-			staging.Reset();
-			D3D11_TEXTURE2D_DESC td{};
-			td.Width = capW;
-			td.Height = capH;
-			td.MipLevels = 1;
-			td.ArraySize = 1;
-			td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-			td.SampleDesc.Count = 1;
-			td.Usage = D3D11_USAGE_STAGING;
-			td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-			device->CreateTexture2D(&td, nullptr, &staging);
+
+			/* Detection target sized to <= DET_MAX_W, preserving aspect. */
+			detW = std::min(capW, DET_MAX_W);
+			detH = std::max(1u, (uint32_t)((uint64_t)capH * detW / capW));
+			detTex.Reset();
+			detRtv.Reset();
+			detStaging.Reset();
+			D3D11_TEXTURE2D_DESC dt{};
+			dt.Width = detW;
+			dt.Height = detH;
+			dt.MipLevels = 1;
+			dt.ArraySize = 1;
+			dt.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+			dt.SampleDesc.Count = 1;
+			dt.Usage = D3D11_USAGE_DEFAULT;
+			dt.BindFlags = D3D11_BIND_RENDER_TARGET;
+			device->CreateTexture2D(&dt, nullptr, &detTex);
+			device->CreateRenderTargetView(detTex.Get(), nullptr, &detRtv);
+			dt.Usage = D3D11_USAGE_STAGING;
+			dt.BindFlags = 0;
+			dt.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			device->CreateTexture2D(&dt, nullptr, &detStaging);
+
 			std::lock_guard<std::mutex> lk(g_snap_mutex);
 			g_snapshots.clear();
 		}
@@ -352,21 +497,37 @@ int main()
 		slot.has_content = true;
 		ring.push_back(slot);
 
-		/* ~5 Hz: read back newest frame and submit for detection. */
-		if (now - last_detect >= DETECT_INTERVAL_NS && staging) {
+		/* ~5 Hz: GPU-downscale the newest frame, read it back, and submit
+		 * for detection (boxes come back in capture space via src_w/h). */
+		if (now - last_detect >= DETECT_INTERVAL_NS && detStaging) {
 			last_detect = now;
-			ctx->CopyResource(staging.Get(), ring.back().tex.Get());
+
+			D3D11_VIEWPORT dvp{0, 0, (float)detW, (float)detH, 0, 1};
+			ctx->OMSetRenderTargets(1, detRtv.GetAddressOf(), nullptr);
+			ctx->RSSetViewports(1, &dvp);
+			ctx->IASetPrimitiveTopology(
+				D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			ctx->IASetInputLayout(nullptr);
+			ctx->VSSetShader(vsFrame.Get(), nullptr, 0);
+			ctx->PSSetShader(psFrame.Get(), nullptr, 0);
+			ctx->PSSetShaderResources(0, 1, ring.back().srv.GetAddressOf());
+			ctx->PSSetSamplers(0, 1, sampler.GetAddressOf());
+			ctx->Draw(3, 0);
+			ID3D11ShaderResourceView *unbind = nullptr;
+			ctx->PSSetShaderResources(0, 1, &unbind);
+
+			ctx->CopyResource(detStaging.Get(), detTex.Get());
 			D3D11_MAPPED_SUBRESOURCE map;
-			if (SUCCEEDED(ctx->Map(staging.Get(), 0, D3D11_MAP_READ, 0,
-					       &map))) {
-				std::vector<uint8_t> buf((size_t)capW * capH * 4);
-				for (uint32_t y = 0; y < capH; ++y) {
+			if (SUCCEEDED(ctx->Map(detStaging.Get(), 0, D3D11_MAP_READ,
+					       0, &map))) {
+				std::vector<uint8_t> buf((size_t)detW * detH * 4);
+				for (uint32_t y = 0; y < detH; ++y) {
 					const uint8_t *row =
 						(const uint8_t *)map.pData +
 						(size_t)y * map.RowPitch;
 					uint8_t *dst = buf.data() +
-						       (size_t)y * capW * 4;
-					for (uint32_t x = 0; x < capW; ++x) {
+						       (size_t)y * detW * 4;
+					for (uint32_t x = 0; x < detW; ++x) {
 						/* BGRA -> RGBA for the detector. */
 						dst[x * 4 + 0] = row[x * 4 + 2];
 						dst[x * 4 + 1] = row[x * 4 + 1];
@@ -374,9 +535,9 @@ int main()
 						dst[x * 4 + 3] = row[x * 4 + 3];
 					}
 				}
-				ctx->Unmap(staging.Get(), 0);
-				detector->submit(std::move(buf), (int)capW,
-						 (int)capH, (int)capW, (int)capH,
+				ctx->Unmap(detStaging.Get(), 0);
+				detector->submit(std::move(buf), (int)detW,
+						 (int)detH, (int)capW, (int)capH,
 						 now);
 			}
 		}

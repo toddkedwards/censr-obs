@@ -123,11 +123,15 @@ and is where the bulk of the schedule and risk sits.
   detection reaches a frame's era). Covers are opaque amber solid rects drawn in
   D3D11.
 
-Verified: launches, captures the primary monitor, initializes the detector, and
-runs the capture→detect→composite loop without OBS. Known MVP limitations (Phase 2+
-work): captures/OCRs at full monitor resolution (should downscale detection input);
-solid rects, not the rounded SDF covers; captures the primary monitor only (no
-window/source picker); and it previews rather than exposing a virtual camera.
+Source selection: `--monitor N` / `--window N`, or an interactive console list of
+monitors and windows (WGC `CreateForMonitor` / `CreateForWindow`). Detection runs on
+a GPU-downscaled copy (≤ 1600 px wide) rather than the full (e.g. 4K) frame; the
+detector scales boxes back to capture space.
+
+Verified: launches, enumerates and captures a chosen monitor or window, initializes
+the detector, and runs the capture→detect→composite loop without OBS. Known MVP
+limitations (Phase 2+ work): solid rects, not the rounded SDF covers; and it previews
+rather than exposing a virtual camera (the Phase 2 device).
 
 ## Open questions to settle before Phase 2
 

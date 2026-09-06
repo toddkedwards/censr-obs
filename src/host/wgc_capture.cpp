@@ -32,7 +32,7 @@ surface_texture(const WD3D::IDirect3DSurface &surface)
 	return tex;
 }
 
-bool WgcCapture::start(ID3D11Device *device, HMONITOR mon)
+bool WgcCapture::start_item(ID3D11Device *device, WGC::GraphicsCaptureItem item)
 {
 	if (!WGC::GraphicsCaptureSession::IsSupported()) {
 		censr_log(LOG_WARNING,
@@ -49,13 +49,7 @@ bool WgcCapture::start(ID3D11Device *device, HMONITOR mon)
 			CreateDirect3D11DeviceFromDXGIDevice(dxgi.get(), insp.put()));
 		rt_device_ = insp.as<WD3D::IDirect3DDevice>();
 
-		/* Build a capture item for the monitor. */
-		auto interop = winrt::get_activation_factory<
-			WGC::GraphicsCaptureItem, ::IGraphicsCaptureItemInterop>();
-		winrt::check_hresult(interop->CreateForMonitor(
-			mon, winrt::guid_of<WGC::GraphicsCaptureItem>(),
-			winrt::put_abi(item_)));
-
+		item_ = item;
 		auto size = item_.Size();
 		width_ = (uint32_t)size.Width;
 		height_ = (uint32_t)size.Height;
@@ -65,13 +59,47 @@ bool WgcCapture::start(ID3D11Device *device, HMONITOR mon)
 			2, size);
 		session_ = pool_.CreateCaptureSession(item_);
 		session_.StartCapture();
-		censr_log(LOG_INFO, "Censr host: capturing %ux%u monitor", width_,
+		censr_log(LOG_INFO, "Censr host: capturing %ux%u source", width_,
 			  height_);
 		return true;
 	} catch (const winrt::hresult_error &e) {
 		censr_log(LOG_WARNING, "Censr host: capture start failed: 0x%08x",
 			  (unsigned)e.code());
 		stop();
+		return false;
+	}
+}
+
+bool WgcCapture::start_monitor(ID3D11Device *device, HMONITOR mon)
+{
+	try {
+		auto interop = winrt::get_activation_factory<
+			WGC::GraphicsCaptureItem, ::IGraphicsCaptureItemInterop>();
+		WGC::GraphicsCaptureItem item{nullptr};
+		winrt::check_hresult(interop->CreateForMonitor(
+			mon, winrt::guid_of<WGC::GraphicsCaptureItem>(),
+			winrt::put_abi(item)));
+		return start_item(device, item);
+	} catch (const winrt::hresult_error &e) {
+		censr_log(LOG_WARNING, "Censr host: CreateForMonitor failed: 0x%08x",
+			  (unsigned)e.code());
+		return false;
+	}
+}
+
+bool WgcCapture::start_window(ID3D11Device *device, HWND wnd)
+{
+	try {
+		auto interop = winrt::get_activation_factory<
+			WGC::GraphicsCaptureItem, ::IGraphicsCaptureItemInterop>();
+		WGC::GraphicsCaptureItem item{nullptr};
+		winrt::check_hresult(interop->CreateForWindow(
+			wnd, winrt::guid_of<WGC::GraphicsCaptureItem>(),
+			winrt::put_abi(item)));
+		return start_item(device, item);
+	} catch (const winrt::hresult_error &e) {
+		censr_log(LOG_WARNING, "Censr host: CreateForWindow failed: 0x%08x",
+			  (unsigned)e.code());
 		return false;
 	}
 }
