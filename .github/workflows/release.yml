@@ -37,7 +37,27 @@ jobs:
       - name: Build
         run: cmake --build --preset windows-ci-x64
 
+      # Decode the code-signing cert from a secret (if configured). When the
+      # secret is absent, artifacts are built unsigned.
+      - name: Prepare code signing
+        id: sign
+        env:
+          PFX_B64: ${{ secrets.CENSR_SIGN_PFX_BASE64 }}
+        run: |
+          if ($env:PFX_B64) {
+            [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\censr.pfx",
+              [Convert]::FromBase64String($env:PFX_B64))
+            "pfx=$env:RUNNER_TEMP\censr.pfx" >> $env:GITHUB_OUTPUT
+            Write-Host "Code-signing cert configured; artifacts will be signed."
+          } else {
+            "pfx=" >> $env:GITHUB_OUTPUT
+            Write-Host "No CENSR_SIGN_PFX_BASE64 secret; artifacts will be unsigned."
+          }
+
       - name: Package
+        env:
+          CENSR_SIGN_PFX: ${{ steps.sign.outputs.pfx }}
+          CENSR_SIGN_PASSWORD: ${{ secrets.CENSR_SIGN_PASSWORD }}
         run: python tools/package.py --build-dir build_x64
 
       - name: Upload artifact

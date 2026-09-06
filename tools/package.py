@@ -40,6 +40,45 @@ def build_installer():
     subprocess.run([iscc, os.path.join(ROOT, "packaging", "censr.iss")], check=True)
 
 
+def find_signtool():
+    import glob
+    cands = sorted(glob.glob(
+        r"C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe"),
+        reverse=True)
+    return cands[0] if cands else shutil.which("signtool")
+
+
+def sign_config():
+    """Authenticode config from env; None if signing isn't configured.
+    CENSR_SIGN_PFX (+ CENSR_SIGN_PASSWORD) for a .pfx, or CENSR_SIGN_THUMBPRINT
+    for a cert already in the store. CENSR_SIGN_TIMESTAMP overrides the TSA."""
+    pfx = os.environ.get("CENSR_SIGN_PFX")
+    thumb = os.environ.get("CENSR_SIGN_THUMBPRINT")
+    if not pfx and not thumb:
+        return None
+    return {
+        "pfx": pfx,
+        "password": os.environ.get("CENSR_SIGN_PASSWORD"),
+        "thumbprint": thumb,
+        "timestamp": os.environ.get("CENSR_SIGN_TIMESTAMP",
+                                    "http://timestamp.digicert.com"),
+    }
+
+
+def sign_file(path, cfg, signtool):
+    args = [signtool, "sign", "/fd", "SHA256",
+            "/tr", cfg["timestamp"], "/td", "SHA256"]
+    if cfg["pfx"]:
+        args += ["/f", cfg["pfx"]]
+        if cfg["password"]:
+            args += ["/p", cfg["password"]]
+    else:
+        args += ["/sha1", cfg["thumbprint"]]
+    args.append(path)
+    subprocess.run(args, check=True)
+    print(f"  signed {os.path.basename(path)}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="RelWithDebInfo")
@@ -79,6 +118,20 @@ def main():
         for m in missing:
             print("  -", m)
 
+    # Code-sign the plugin binary (before it's zipped/installed) if a cert is
+    # configured; otherwise leave it unsigned.
+    cfg = sign_config()
+    signtool = find_signtool() if cfg else None
+    if cfg and not signtool:
+        print("WARNING: signing configured but signtool.exe not found; skipping")
+        cfg = None
+    if cfg:
+        print("Signing plugin binary ...")
+        sign_file(os.path.join(stage, name, "bin", "64bit", f"{name}.dll"),
+                  cfg, signtool)
+    else:
+        print("(unsigned — set CENSR_SIGN_PFX or CENSR_SIGN_THUMBPRINT to sign)")
+
     out = os.path.join(ROOT, "dist", f"{name}-{version}-windows-x64.zip")
     total = 0
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
@@ -95,6 +148,12 @@ def main():
 
     if args.installer:
         build_installer()
+        if cfg:
+            installer = os.path.join(
+                ROOT, "dist", f"{name}-{version}-windows-x64-installer.exe")
+            if os.path.exists(installer):
+                print("Signing installer ...")
+                sign_file(installer, cfg, signtool)
 
 
 if __name__ == "__main__":

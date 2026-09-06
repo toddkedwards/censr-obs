@@ -135,6 +135,21 @@ distributable zip, and optionally an installer (needs Inno Setup:
 python tools/package.py --installer   # -> dist/censr-<ver>-windows-x64.zip (+ .exe)
 ```
 
+**Code signing** (optional; removes the SmartScreen warning). If a certificate is
+configured, `package.py` signs `censr.dll` and the installer with `signtool`;
+otherwise they're left unsigned. Point it at a `.pfx`:
+
+```bash
+set CENSR_SIGN_PFX=C:\path\to\cert.pfx
+set CENSR_SIGN_PASSWORD=...            # or use CENSR_SIGN_THUMBPRINT for a store cert
+python tools/package.py --installer
+```
+
+In CI, add repo secrets `CENSR_SIGN_PFX_BASE64` (base64 of the `.pfx`) and
+`CENSR_SIGN_PASSWORD`; the release workflow signs automatically when they're
+present. A real (trusted) Authenticode certificate from a CA is required to
+actually suppress SmartScreen — a self-signed cert only proves the pipeline.
+
 ## Configuration
 
 Add the **Censr Redaction** filter to a source and open its properties (all apply
