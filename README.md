@@ -25,6 +25,18 @@ On a 1080p OBS source, add the **Censr Redaction** filter to any source and:
 
 ![Censr covering secrets on a 1080p source](docs/demo.png)
 
+## Install
+
+Close OBS, then either:
+
+- **Installer** — run `censr-<version>-windows-x64-installer.exe`, or
+- **Zip** — extract `censr-<version>-windows-x64.zip` into
+  `%ProgramData%\obs-studio\plugins\` (so you get
+  `…\plugins\censr\bin\64bit\censr.dll`).
+
+Reopen OBS and add the **Censr Redaction** filter to any source (right-click the
+source → Filters → **+** → Censr Redaction).
+
 ## Architecture — a two-rate pipeline + zero-leak buffer
 
 - **Every frame (render thread):** capture the source into a GPU ring buffer and
@@ -113,6 +125,14 @@ next to `censr.dll`.
 ```
 %ProgramData%\obs-studio\plugins\censr\bin\64bit\censr.dll
 %ProgramData%\obs-studio\plugins\censr\data\...
+```
+
+**Package a release** — assembles the plugin (DLLs + ONNX Runtime + models) into a
+distributable zip, and optionally an installer (needs Inno Setup:
+`winget install JRSoftware.InnoSetup`):
+
+```bash
+python tools/package.py --installer   # -> dist/censr-<ver>-windows-x64.zip (+ .exe)
 ```
 
 ## Configuration

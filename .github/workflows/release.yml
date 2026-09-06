@@ -1,0 +1,53 @@
+name: Build & Release
+run-name: ${{ github.ref_name }} 🚀
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+  workflow_dispatch:
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build & package (Windows x64)
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fetch GPU OCR deps (PP-OCR models + ONNX Runtime)
+        run: python tools/fetch_gpu_ocr.py
+
+      - name: Read plugin version
+        id: v
+        run: |
+          $spec = Get-Content buildspec.json -Raw | ConvertFrom-Json
+          "version=$($spec.version)" >> $env:GITHUB_OUTPUT
+
+      - name: Configure
+        run: cmake --preset windows-ci-x64
+
+      - name: Build
+        run: cmake --build --preset windows-ci-x64
+
+      - name: Package
+        run: python tools/package.py --build-dir build_x64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: censr-${{ steps.v.outputs.version }}-windows-x64
+          path: dist/censr-*-windows-x64.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/censr-*-windows-x64.zip

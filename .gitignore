@@ -9,6 +9,7 @@
 !/src
 !/tools
 !/docs
+!/packaging
 !.clang-format
 !.gersemirc
 !.gitignore

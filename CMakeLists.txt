@@ -112,4 +112,26 @@ else()
   message(FATAL_ERROR "Censr: ONNX Runtime (${_censr_ort_label}) not found at ${CENSR_ORT_DIR} — run tools/fetch_gpu_ocr.py")
 endif()
 
+# Bundle the ONNX Runtime runtime DLLs with the plugin (install + rundir), so the
+# packaged plugin is self-contained next to censr.dll.
+set(_censr_ort_dlls "${CENSR_ORT_DIR}/runtimes/win-x64/native/onnxruntime.dll")
+if(CENSR_ORT_GPU)
+  file(GLOB _censr_prov_dlls "${CENSR_ORT_DIR}/runtimes/win-x64/native/onnxruntime_providers_*.dll")
+  list(APPEND _censr_ort_dlls ${_censr_prov_dlls})
+else()
+  list(APPEND _censr_ort_dlls
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/directml/bin/x64-win/DirectML.dll")
+endif()
+install(FILES ${_censr_ort_dlls}
+  DESTINATION "${CMAKE_PROJECT_NAME}/bin/64bit" COMPONENT Runtime)
+foreach(_dll IN LISTS _censr_ort_dlls)
+  add_custom_command(
+    TARGET ${CMAKE_PROJECT_NAME}
+    POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_dll}"
+      "${CMAKE_CURRENT_BINARY_DIR}/rundir/$<CONFIG>/"
+    VERBATIM
+  )
+endforeach()
+
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
