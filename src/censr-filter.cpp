@@ -324,18 +324,22 @@ void draw_covers(censr_filter *filter, const std::vector<censr_box> &boxes)
 			return;
 	}
 
+	/* Convert the picked sRGB color to linear (OBS composites in linear
+	 * space) and force full alpha. */
 	uint32_t rgb = filter->cover_color.load();
 	struct vec4 col;
-	vec4_set(&col, (rgb & 0xFF) / 255.f, ((rgb >> 8) & 0xFF) / 255.f,
-		 ((rgb >> 16) & 0xFF) / 255.f, 1.0f);
+	vec4_from_rgba_srgb(&col, rgb | 0xFF000000u);
 
 	gs_effect_t *eff = filter->round_effect;
 	gs_eparam_t *p_color = gs_effect_get_param_by_name(eff, "color");
 	gs_eparam_t *p_size = gs_effect_get_param_by_name(eff, "box_size");
 	gs_eparam_t *p_radius = gs_effect_get_param_by_name(eff, "radius");
 
-	/* Blending on so rounded (anti-aliased) corners composite over the frame;
-	 * the interior is alpha=1 -> fully opaque. */
+	/* Draw into the sRGB framebuffer so the linear color is encoded correctly
+	 * on store and the anti-aliased corners blend in linear space; the
+	 * interior is alpha=1 -> fully opaque. */
+	const bool prev_srgb = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(true);
 	gs_blend_state_push();
 	gs_enable_blending(true);
 	gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
@@ -358,6 +362,7 @@ void draw_covers(censr_filter *filter, const std::vector<censr_box> &boxes)
 	}
 
 	gs_blend_state_pop();
+	gs_enable_framebuffer_srgb(prev_srgb);
 }
 
 /* --- capture (into ring) + readback (for detection) ---------------------- */
