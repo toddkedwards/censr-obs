@@ -101,8 +101,51 @@ struct censr_filter {
 	uint32_t stage_w = 0, stage_h = 0;
 	uint64_t last_detect_ns = 0;
 
+	gs_effect_t *round_effect = nullptr; /* rounded-rect cover shader */
+
 	uint64_t last_delaylog_ns = 0;
 };
+
+/* Rounded-rectangle fill: opaque interior, corners rounded within the padding
+ * margin (anti-aliased edge). */
+static const char *CENSR_ROUND_EFFECT = R"(
+uniform float4x4 ViewProj;
+uniform float4 color;
+uniform float2 box_size;
+uniform float radius;
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData o;
+	o.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	o.uv = v_in.uv;
+	return o;
+}
+
+float4 PSRound(VertData v_in) : TARGET
+{
+	float2 p = v_in.uv * box_size;
+	float2 hs = box_size * 0.5;
+	float2 q = abs(p - hs) - (hs - radius);
+	float d = length(max(q, float2(0.0, 0.0))) - radius;
+	float a = 1.0 - smoothstep(-1.0, 1.0, d);
+	return float4(color.rgb, color.a * a);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSRound(v_in);
+	}
+}
+)";
 
 const char *censr_get_name(void *)
 {
@@ -262,27 +305,56 @@ void draw_delayed_frame(FrameSlot &f, uint32_t cx, uint32_t cy)
 	gs_enable_framebuffer_srgb(prev);
 }
 
-void draw_covers(const std::vector<censr_box> &boxes, uint32_t rgb)
+void draw_covers(censr_filter *filter, const std::vector<censr_box> &boxes)
 {
 	if (boxes.empty())
 		return;
-	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
-	gs_eparam_t *color = gs_effect_get_param_by_name(solid, "color");
+
+	if (!filter->round_effect) {
+		char *err = nullptr;
+		filter->round_effect =
+			gs_effect_create(CENSR_ROUND_EFFECT, "censr_round", &err);
+		if (err) {
+			obs_log(LOG_WARNING, "Censr round-rect effect error: %s", err);
+			bfree(err);
+		}
+		if (!filter->round_effect)
+			return;
+	}
+
+	uint32_t rgb = filter->cover_color.load();
 	struct vec4 col;
 	vec4_set(&col, (rgb & 0xFF) / 255.f, ((rgb >> 8) & 0xFF) / 255.f,
 		 ((rgb >> 16) & 0xFF) / 255.f, 1.0f);
-	gs_effect_set_vec4(color, &col);
 
+	gs_effect_t *eff = filter->round_effect;
+	gs_eparam_t *p_color = gs_effect_get_param_by_name(eff, "color");
+	gs_eparam_t *p_size = gs_effect_get_param_by_name(eff, "box_size");
+	gs_eparam_t *p_radius = gs_effect_get_param_by_name(eff, "radius");
+
+	/* Blending on so rounded (anti-aliased) corners composite over the frame;
+	 * the interior is alpha=1 -> fully opaque. */
 	gs_blend_state_push();
-	gs_enable_blending(false);
-	while (gs_effect_loop(solid, "Solid")) {
-		for (const auto &b : boxes) {
-			gs_matrix_push();
-			gs_matrix_translate3f(b.x, b.y, 0.0f);
+	gs_enable_blending(true);
+	gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
+
+	for (const auto &b : boxes) {
+		float radius = std::min({CENSR_COVER_PAD, b.w * 0.35f, b.h * 0.35f});
+		if (radius < 1.f)
+			radius = 1.f;
+		struct vec2 sz;
+		vec2_set(&sz, b.w, b.h);
+		gs_effect_set_vec4(p_color, &col);
+		gs_effect_set_vec2(p_size, &sz);
+		gs_effect_set_float(p_radius, radius);
+
+		gs_matrix_push();
+		gs_matrix_translate3f(b.x, b.y, 0.0f);
+		while (gs_effect_loop(eff, "Draw"))
 			gs_draw_sprite(nullptr, 0, (uint32_t)b.w, (uint32_t)b.h);
-			gs_matrix_pop();
-		}
+		gs_matrix_pop();
 	}
+
 	gs_blend_state_pop();
 }
 
@@ -380,8 +452,7 @@ void censr_video_render(void *data, gs_effect_t *effect)
 	FrameSlot &disp = filter->frames.front();
 	if (disp.has_content) {
 		draw_delayed_frame(disp, filter->cx, filter->cy);
-		draw_covers(covers_for(filter, disp.ts),
-			    filter->cover_color.load());
+		draw_covers(filter, covers_for(filter, disp.ts));
 	} else {
 		draw_black(filter->cx, filter->cy); /* buffer still filling */
 	}
@@ -545,11 +616,12 @@ void censr_destroy(void *data)
 	filter->detector.reset();
 
 	free_frames(filter);
-	if (filter->stage) {
-		obs_enter_graphics();
+	obs_enter_graphics();
+	if (filter->stage)
 		gs_stagesurface_destroy(filter->stage);
-		obs_leave_graphics();
-	}
+	if (filter->round_effect)
+		gs_effect_destroy(filter->round_effect);
+	obs_leave_graphics();
 
 	obs_log(LOG_INFO, "Censr Redaction filter destroyed");
 	delete filter;

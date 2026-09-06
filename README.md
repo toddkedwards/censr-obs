@@ -121,7 +121,7 @@ and `tools/make_fixture.py` (generates a 1080p fixture with **fake** secrets).
 
 ## Roadmap
 
-- Rounded-corner covers; per-word (vs per-line) redaction granularity.
+- Per-word (vs per-line) redaction granularity.
 - Motion-tracking stress test.
 - Optional CUDA/TensorRT execution provider for the OCR models.
 
