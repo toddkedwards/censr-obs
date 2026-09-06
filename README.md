@@ -119,10 +119,14 @@ build a test scene, apply the filter, capture screenshots, and report fps — so
 detection and the fps gate can be checked automatically. See `tools/obs_verify.py`
 and `tools/make_fixture.py` (generates a 1080p fixture with **fake** secrets).
 
+Other checks: `tools/test_zeroleak.py` (a secret appears in the delayed output
+already covered — no uncovered frame) and `tools/test_motion.py` (a moving secret
+clip; measures leaked-secret pixels vs a filter-off baseline and the cover's
+travel — the cover tracks with near-zero leak).
+
 ## Roadmap
 
 - Per-word (vs per-line) redaction granularity.
-- Motion-tracking stress test.
 - Optional CUDA/TensorRT execution provider for the OCR models.
 
 ## License
