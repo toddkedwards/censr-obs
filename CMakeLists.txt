@@ -152,15 +152,16 @@ else()
 endif()
 install(FILES ${_censr_ort_dlls}
   DESTINATION "${CMAKE_PROJECT_NAME}/bin/64bit" COMPONENT Runtime)
-foreach(_dll IN LISTS _censr_ort_dlls)
-  add_custom_command(
-    TARGET ${CMAKE_PROJECT_NAME}
-    POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_dll}"
-      "${CMAKE_CURRENT_BINARY_DIR}/rundir/$<CONFIG>/"
-    VERBATIM
-  )
-endforeach()
+# Also drop the ORT DLLs next to the rundir binary for local testing. Create the
+# dir first (it may not exist yet on a clean build) and copy all in one command.
+add_custom_command(
+  TARGET ${CMAKE_PROJECT_NAME}
+  POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/rundir/$<CONFIG>"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${_censr_ort_dlls}
+    "${CMAKE_CURRENT_BINARY_DIR}/rundir/$<CONFIG>"
+  VERBATIM
+)
 endif() # WIN32 (ONNX Runtime)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
