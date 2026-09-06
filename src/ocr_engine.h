@@ -48,5 +48,8 @@ std::unique_ptr<ICensrOcr> create_winrt_ocr();
  * Returns nullptr if the models can't be loaded or the GPU EP is unavailable. */
 std::unique_ptr<ICensrOcr> create_onnx_ocr(const std::string &det_model,
 					   const std::string &rec_model);
+/* Creates the macOS Vision (VNRecognizeTextRequest) engine. Returns nullptr if
+ * unavailable. No apartment/threading setup required. */
+std::unique_ptr<ICensrOcr> create_vision_ocr();
 
 } // namespace censr
