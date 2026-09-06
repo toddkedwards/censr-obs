@@ -11,6 +11,7 @@ See docs/roadmap-standalone-vcam.md.
 */
 
 #include "wgc_capture.h"
+#include "shared_frame.h"
 
 #include "censr_detector.h"
 #include "censr_log.h"
@@ -48,6 +49,7 @@ constexpr uint64_t GUARANTEE_MIN_DELAY_NS = 500000000ull;
 constexpr uint64_t SNAPSHOT_KEEP_NS = 3000000000ull;
 constexpr float COVER_PAD = 8.0f;
 constexpr uint32_t DET_MAX_W = 1600; /* OCR runs on a frame no wider than this */
+constexpr uint32_t OUT_MAX_W = 1920; /* virtual-camera output width cap */
 
 uint64_t now_ns()
 {
@@ -413,6 +415,14 @@ int main(int argc, char **argv)
 	ComPtr<ID3D11Texture2D> detTex, detStaging;
 	ComPtr<ID3D11RenderTargetView> detRtv;
 	uint32_t capW = 0, capH = 0, detW = 0, detH = 0;
+	/* Offscreen output: the finished (redacted) frame is composited here at
+	 * <= OUT_MAX_W, read back, and published to the shared virtual-camera
+	 * stream; the preview window then draws this same texture. */
+	ComPtr<ID3D11Texture2D> outTex, outStaging;
+	ComPtr<ID3D11RenderTargetView> outRtv;
+	ComPtr<ID3D11ShaderResourceView> outSrv;
+	uint32_t outW = 0, outH = 0;
+	censr::SharedFrameWriter vcam;
 	size_t wanted = (size_t)(DELAY_NS / TICK_INTERVAL_NS);
 
 	auto make_slot = [&](uint32_t w, uint32_t h) {
@@ -483,6 +493,32 @@ int main(int argc, char **argv)
 			dt.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 			device->CreateTexture2D(&dt, nullptr, &detStaging);
 
+			/* Output (redacted) texture + readback + vcam stream. */
+			outW = std::min(capW, OUT_MAX_W);
+			outH = std::max(1u, (uint32_t)((uint64_t)capH * outW / capW));
+			outTex.Reset();
+			outRtv.Reset();
+			outSrv.Reset();
+			outStaging.Reset();
+			D3D11_TEXTURE2D_DESC ot{};
+			ot.Width = outW;
+			ot.Height = outH;
+			ot.MipLevels = 1;
+			ot.ArraySize = 1;
+			ot.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+			ot.SampleDesc.Count = 1;
+			ot.Usage = D3D11_USAGE_DEFAULT;
+			ot.BindFlags = D3D11_BIND_RENDER_TARGET |
+				       D3D11_BIND_SHADER_RESOURCE;
+			device->CreateTexture2D(&ot, nullptr, &outTex);
+			device->CreateRenderTargetView(outTex.Get(), nullptr, &outRtv);
+			device->CreateShaderResourceView(outTex.Get(), nullptr, &outSrv);
+			ot.Usage = D3D11_USAGE_STAGING;
+			ot.BindFlags = 0;
+			ot.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			device->CreateTexture2D(&ot, nullptr, &outStaging);
+			vcam.ensure(outW, outH);
+
 			std::lock_guard<std::mutex> lk(g_snap_mutex);
 			g_snapshots.clear();
 		}
@@ -542,7 +578,77 @@ int main(int argc, char **argv)
 			}
 		}
 
-		/* ---- render the delayed frame + covers to the backbuffer ---- */
+		RingSlot &disp = ring.front();
+		CoverSet cov = covers_for(disp.ts);
+		bool guarantee = DELAY_NS >= GUARANTEE_MIN_DELAY_NS;
+		bool show = disp.has_content && !(guarantee && !cov.detection_current);
+
+		auto blit = [&](ID3D11ShaderResourceView *srv) {
+			ctx->IASetPrimitiveTopology(
+				D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+			ctx->IASetInputLayout(nullptr);
+			ctx->VSSetShader(vsFrame.Get(), nullptr, 0);
+			ctx->PSSetShader(psFrame.Get(), nullptr, 0);
+			ctx->PSSetShaderResources(0, 1, &srv);
+			ctx->PSSetSamplers(0, 1, sampler.GetAddressOf());
+			ctx->Draw(3, 0);
+			ID3D11ShaderResourceView *none = nullptr;
+			ctx->PSSetShaderResources(0, 1, &none);
+		};
+
+		/* ---- compose the finished (redacted) frame into outTex ---- */
+		float black[4] = {0, 0, 0, 1};
+		{
+			D3D11_VIEWPORT ovp{0, 0, (float)outW, (float)outH, 0, 1};
+			ctx->OMSetRenderTargets(1, outRtv.GetAddressOf(), nullptr);
+			ctx->RSSetViewports(1, &ovp);
+			ctx->ClearRenderTargetView(outRtv.Get(), black);
+			if (show) {
+				blit(disp.srv.Get());
+				/* Opaque amber covers (solid overwrite, no blend). */
+				ctx->IASetPrimitiveTopology(
+					D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+				ctx->VSSetShader(vsRect.Get(), nullptr, 0);
+				ctx->PSSetShader(psRect.Get(), nullptr, 0);
+				ctx->VSSetConstantBuffers(0, 1,
+							  rectCB.GetAddressOf());
+				for (const auto &b : cov.boxes) {
+					RectCB cb{};
+					cb.rect[0] = b.x / capW * 2.f - 1.f;
+					cb.rect[1] = 1.f - b.y / capH * 2.f;
+					cb.rect[2] = (b.x + b.w) / capW * 2.f - 1.f;
+					cb.rect[3] = 1.f - (b.y + b.h) / capH * 2.f;
+					cb.color[0] = 1.0f; /* amber */
+					cb.color[1] = 0.749f;
+					cb.color[2] = 0.0f;
+					cb.color[3] = 1.0f;
+					D3D11_MAPPED_SUBRESOURCE mm;
+					if (SUCCEEDED(ctx->Map(
+						    rectCB.Get(), 0,
+						    D3D11_MAP_WRITE_DISCARD, 0,
+						    &mm))) {
+						memcpy(mm.pData, &cb, sizeof(cb));
+						ctx->Unmap(rectCB.Get(), 0);
+					}
+					ctx->Draw(4, 0);
+				}
+			}
+			/* Unbind outTex as RTV before using it as a source. */
+			ID3D11RenderTargetView *nort = nullptr;
+			ctx->OMSetRenderTargets(1, &nort, nullptr);
+		}
+
+		/* ---- publish the redacted frame to the virtual-camera stream ---- */
+		ctx->CopyResource(outStaging.Get(), outTex.Get());
+		D3D11_MAPPED_SUBRESOURCE om;
+		if (SUCCEEDED(ctx->Map(outStaging.Get(), 0, D3D11_MAP_READ, 0,
+				       &om))) {
+			vcam.write((const uint8_t *)om.pData, outW, outH,
+				   om.RowPitch, now);
+			ctx->Unmap(outStaging.Get(), 0);
+		}
+
+		/* ---- preview: draw the same redacted frame to the window ---- */
 		ComPtr<ID3D11Texture2D> back;
 		swap->GetBuffer(0, IID_PPV_ARGS(&back));
 		ComPtr<ID3D11RenderTargetView> rtv;
@@ -553,54 +659,8 @@ int main(int argc, char **argv)
 				  0, 1};
 		ctx->RSSetViewports(1, &vp);
 		ctx->OMSetRenderTargets(1, rtv.GetAddressOf(), nullptr);
-		float black[4] = {0, 0, 0, 1};
 		ctx->ClearRenderTargetView(rtv.Get(), black);
-
-		RingSlot &disp = ring.front();
-		CoverSet cov = covers_for(disp.ts);
-		bool guarantee = DELAY_NS >= GUARANTEE_MIN_DELAY_NS;
-		bool show = disp.has_content && !(guarantee && !cov.detection_current);
-
-		if (show) {
-			/* Blit the delayed frame. */
-			ctx->IASetPrimitiveTopology(
-				D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-			ctx->IASetInputLayout(nullptr);
-			ctx->VSSetShader(vsFrame.Get(), nullptr, 0);
-			ctx->PSSetShader(psFrame.Get(), nullptr, 0);
-			ctx->PSSetShaderResources(0, 1, disp.srv.GetAddressOf());
-			ctx->PSSetSamplers(0, 1, sampler.GetAddressOf());
-			ctx->Draw(3, 0);
-
-			/* Opaque amber covers. */
-			ctx->IASetPrimitiveTopology(
-				D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-			ctx->VSSetShader(vsRect.Get(), nullptr, 0);
-			ctx->PSSetShader(psRect.Get(), nullptr, 0);
-			ctx->VSSetConstantBuffers(0, 1, rectCB.GetAddressOf());
-			ID3D11ShaderResourceView *none = nullptr;
-			ctx->PSSetShaderResources(0, 1, &none);
-			for (const auto &b : cov.boxes) {
-				RectCB cb{};
-				cb.rect[0] = b.x / capW * 2.f - 1.f;
-				cb.rect[1] = 1.f - b.y / capH * 2.f;
-				cb.rect[2] = (b.x + b.w) / capW * 2.f - 1.f;
-				cb.rect[3] = 1.f - (b.y + b.h) / capH * 2.f;
-				cb.color[0] = 1.0f; /* amber */
-				cb.color[1] = 0.749f;
-				cb.color[2] = 0.0f;
-				cb.color[3] = 1.0f;
-				D3D11_MAPPED_SUBRESOURCE mm;
-				if (SUCCEEDED(ctx->Map(rectCB.Get(), 0,
-						       D3D11_MAP_WRITE_DISCARD, 0,
-						       &mm))) {
-					memcpy(mm.pData, &cb, sizeof(cb));
-					ctx->Unmap(rectCB.Get(), 0);
-				}
-				ctx->Draw(4, 0);
-			}
-		}
-		/* else: backbuffer stays black (fail closed). */
+		blit(outSrv.Get());
 
 		swap->Present(1, 0);
 	}

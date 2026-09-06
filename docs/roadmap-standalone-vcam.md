@@ -100,7 +100,7 @@ a cleaner story for the paid Lemon Squeezy SKU than the plugin.
 |---|---|---|
 | **0 ✅** | Extract `censr-core` static lib; OBS plugin links it (no behavior change) — **done** | low |
 | **1 ✅** | `censr-host` MVP: WGC capture → detect → D3D11 cover composite → **preview window** (no vcam). Proves the engine runs outside OBS — **done** | low–med |
-| **2** | Shared-mem ring + **DirectShow** vcam reading it; signed installer that registers it. *This is the "works with everyone" milestone.* | **high** (device reg, signing, cross-app testing) |
+| **2 ◐** | Shared-mem ring **✅** + **DirectShow** vcam reading it (next); signed installer that registers it. *This is the "works with everyone" milestone.* | **high** (device reg, signing, cross-app testing) |
 | **3** | **MF** virtual camera variant + MSIX for modern Win11 apps | high |
 | **4** | Tray UI / config parity with the filter (rules, delay, color, per-word, engine) + source picker (which monitor/window/cam) | med |
 | **5** | Packaging, signing, SmartScreen-clean, docs | med |
@@ -132,6 +132,30 @@ Verified: launches, enumerates and captures a chosen monitor or window, initiali
 the detector, and runs the capture→detect→composite loop without OBS. Known MVP
 limitations (Phase 2+ work): solid rects, not the rounded SDF covers; and it previews
 rather than exposing a virtual camera (the Phase 2 device).
+
+### Phase 2 progress — the frame transport (done)
+
+The backbone both device backends will consume is built and proven:
+
+- `src/host/shared_frame.{h,cpp}` — a single-producer, triple-buffered shared-memory
+  frame ring (`Local\CensrVCamFrame`), tear-free via an interlocked sequence number.
+  Deliberately free of `censr-core` so the tiny device DLL can link it alone.
+- `censr-host` now composites the finished (redacted) frame into an offscreen output
+  texture (≤ 1920 px wide), reads it back, and **publishes it to the ring every tick**;
+  the preview window draws that same output, so what you see is exactly what the
+  camera will emit.
+- `src/host/vcam_probe.cpp` (`censr-vcam-probe`) — a dependency-free reader that
+  attaches to a running host and confirms live frames are flowing; stands in for the
+  device until it exists.
+- Tests: `tools/test_shared_frame.cpp` (round-trip: write patterns, read back tear-
+  free, sequence advances; a ctest). End-to-end verified: host publishes 1920×1080
+  BGRA, a separate probe process reads ~20 fps of live redacted frames.
+
+**Still to do for Phase 2:** the actual **DirectShow source filter** (and/or MF
+`MFCreateVirtualCamera` media source) that reads this ring and registers as a system
+camera, plus the signed installer that registers it. That is the part that needs a
+real code-signing cert and elevated/MSIX install, and cross-app testing — see the
+device-backend and signing notes above.
 
 ## Open questions to settle before Phase 2
 

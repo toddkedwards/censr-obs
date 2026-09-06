@@ -100,6 +100,21 @@ if(CENSR_BUILD_TESTS)
     PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
   )
   add_test(NAME secret-rules COMMAND censr-test-secret-rules)
+
+  if(WIN32)
+    add_executable(censr-test-shared-frame
+      tools/test_shared_frame.cpp
+      src/host/shared_frame.cpp)
+    target_include_directories(censr-test-shared-frame PRIVATE src/host)
+    target_compile_definitions(
+      censr-test-shared-frame PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+    )
+    set_target_properties(
+      censr-test-shared-frame
+      PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
+    )
+    add_test(NAME shared-frame COMMAND censr-test-shared-frame)
+  endif()
 endif()
 
 # --- C++/WinRT (Windows.Media.Ocr) — Windows only ---
@@ -125,6 +140,7 @@ if(WIN32)
       censr-host
       src/host/censr_host.cpp
       src/host/wgc_capture.cpp
+      src/host/shared_frame.cpp
     )
     target_link_libraries(
       censr-host PRIVATE censr-core d3d11 dxgi dxguid d3dcompiler WindowsApp
@@ -135,6 +151,24 @@ if(WIN32)
     target_compile_definitions(censr-host PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     set_target_properties(
       censr-host PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
+    )
+
+    # Diagnostic reader for the shared virtual-camera frame stream (stands in
+    # for the real device backend until it exists). Dependency-free: just the
+    # transport + Win32.
+    add_executable(
+      censr-vcam-probe
+      src/host/vcam_probe.cpp
+      src/host/shared_frame.cpp
+    )
+    target_include_directories(
+      censr-vcam-probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/host"
+    )
+    target_compile_definitions(
+      censr-vcam-probe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+    )
+    set_target_properties(
+      censr-vcam-probe PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
     )
   endif()
 endif()
