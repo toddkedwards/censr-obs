@@ -53,6 +53,7 @@ static constexpr uint32_t CENSR_DEFAULT_COLOR = 255u | (191u << 8);
 #define S_RULE_LABELS "rule_labels"
 #define S_RULE_EMAILS "rule_emails"
 #define S_RULE_QR "rule_qr"
+#define S_PER_WORD "per_word"
 
 namespace {
 
@@ -81,6 +82,7 @@ struct censr_filter {
 	std::string det_model, rec_model;
 	int engine_pref = 0; /* 0 auto, 1 gpu, 2 windows */
 	uint32_t rule_mask = censr::CENSR_RULE_ALL;
+	bool per_word = false;
 
 	/* Settings (read on the render thread). */
 	std::atomic<uint64_t> delay_ns{CENSR_DEFAULT_DELAY_MS * 1000000ull};
@@ -500,6 +502,7 @@ std::unique_ptr<censr::Detector> make_detector(censr_filter *filter,
 		},
 		filter->det_model, filter->rec_model, eng);
 	d->set_rules(filter->rule_mask);
+	d->set_per_word(filter->per_word);
 	return d;
 }
 
@@ -525,6 +528,7 @@ void *censr_create(obs_data_t *settings, obs_source_t *source)
 			       1000000ull);
 	filter->cover_color.store((uint32_t)obs_data_get_int(settings, S_COLOR));
 	filter->rule_mask = rules_from_settings(settings);
+	filter->per_word = obs_data_get_bool(settings, S_PER_WORD);
 	filter->engine_pref = (int)obs_data_get_int(settings, S_ENGINE);
 
 	filter->detector = make_detector(filter, engine_from_int(filter->engine_pref));
@@ -541,10 +545,13 @@ void censr_update(void *data, obs_data_t *settings)
 			       1000000ull);
 	filter->cover_color.store((uint32_t)obs_data_get_int(settings, S_COLOR));
 	filter->rule_mask = rules_from_settings(settings);
+	filter->per_word = obs_data_get_bool(settings, S_PER_WORD);
 	{
 		std::lock_guard<std::mutex> lk(filter->detector_mutex);
-		if (filter->detector)
+		if (filter->detector) {
 			filter->detector->set_rules(filter->rule_mask);
+			filter->detector->set_per_word(filter->per_word);
+		}
 	}
 
 	int engine = (int)obs_data_get_int(settings, S_ENGINE);
@@ -575,6 +582,7 @@ void censr_defaults(obs_data_t *s)
 	obs_data_set_default_bool(s, S_RULE_LABELS, true);
 	obs_data_set_default_bool(s, S_RULE_EMAILS, true);
 	obs_data_set_default_bool(s, S_RULE_QR, true);
+	obs_data_set_default_bool(s, S_PER_WORD, false);
 }
 
 obs_properties_t *censr_properties(void *data)
@@ -605,6 +613,13 @@ obs_properties_t *censr_properties(void *data)
 				"Redact password / secret / token lines");
 	obs_properties_add_bool(p, S_RULE_EMAILS, "Redact email addresses");
 	obs_properties_add_bool(p, S_RULE_QR, "Redact QR codes / barcodes");
+
+	obs_property_t *pw = obs_properties_add_bool(
+		p, S_PER_WORD, "Per-word redaction (hide only the secret token)");
+	obs_property_set_long_description(
+		pw,
+		"Cover only the matched secret token instead of the whole line "
+		"(e.g. hide the key value but leave the label visible).");
 
 	return p;
 }

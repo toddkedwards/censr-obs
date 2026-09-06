@@ -45,6 +45,9 @@ public:
 	/* Live-updatable enabled rule categories (CensrRuleFlags bitmask). */
 	void set_rules(uint32_t mask) { rule_mask_.store(mask); }
 
+	/* Live-updatable per-word (vs per-line) redaction granularity. */
+	void set_per_word(bool v) { per_word_.store(v); }
+
 private:
 	struct Frame {
 		std::vector<uint8_t> rgba;
@@ -59,6 +62,7 @@ private:
 	std::string det_model_, rec_model_;
 	Engine engine_ = Engine::AUTO;
 	std::atomic<uint32_t> rule_mask_{CENSR_RULE_ALL};
+	std::atomic<bool> per_word_{false};
 
 	std::thread thread_;
 	std::mutex mutex_;

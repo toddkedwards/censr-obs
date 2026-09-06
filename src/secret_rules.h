@@ -23,9 +23,11 @@ enum CensrRuleFlags : uint32_t {
 
 /* Given OCR lines, return the boxes (in the same detection-image pixel space as
  * the OCR input) that should be covered because they contain a secret in one of
- * the enabled categories. Line-granular: a matching line contributes its whole
- * text box, so non-matching lines stay visible. */
+ * the enabled categories.
+ *   per_word == false: line-granular (a matching line contributes its whole box).
+ *   per_word == true:  cover only the secret token(s) within the line, mapping
+ *                      the matched character span to a sub-box proportionally. */
 std::vector<RectF> find_secret_boxes(const std::vector<OcrLine> &lines,
-				     uint32_t rule_mask);
+				     uint32_t rule_mask, bool per_word);
 
 } // namespace censr

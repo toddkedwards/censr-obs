@@ -6,6 +6,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "secret_rules.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <regex>
@@ -141,17 +142,103 @@ bool line_is_secret(const OcrLine &line, uint32_t mask)
 	return false;
 }
 
+struct Span {
+	size_t s, e;
+};
+
+void add_span(std::vector<Span> &out, size_t s, size_t e)
+{
+	if (e > s)
+		out.push_back({s, e});
+}
+
+/* Character spans of the secret token(s) within a line, for per-word redaction. */
+std::vector<Span> secret_spans(const std::string &t, uint32_t mask)
+{
+	std::vector<Span> spans;
+	auto collect = [&](const std::regex &re) {
+		for (auto it = std::sregex_iterator(t.begin(), t.end(), re);
+		     it != std::sregex_iterator(); ++it)
+			add_span(spans, (size_t)it->position(),
+				 (size_t)(it->position() + it->length()));
+	};
+	if (mask & CENSR_RULE_EMAILS)
+		collect(email_re());
+	if (mask & CENSR_RULE_APIKEYS) {
+		collect(aws_re());
+		collect(github_re());
+		collect(sk_re());
+		size_t i = 0, n = t.size();
+		while (i < n) {
+			while (i < n && std::isspace((unsigned char)t[i]))
+				++i;
+			size_t j = i;
+			while (j < n && !std::isspace((unsigned char)t[j]))
+				++j;
+			if (j > i) {
+				/* For a LABEL=value token, treat the value (after
+				 * '='/':') as the secret so the label stays shown. */
+				std::string tok = t.substr(i, j - i);
+				size_t eqp = tok.find_last_of("=:");
+				size_t vs = (eqp == std::string::npos) ? 0 : eqp + 1;
+				if (is_high_entropy_token(tok.substr(vs)))
+					add_span(spans, i + vs, j);
+			}
+			i = j;
+		}
+	}
+	if ((mask & CENSR_RULE_LABELS) && std::regex_search(t, label_re()) &&
+	    (std::regex_search(t, assignment_re()) ||
+	     std::regex_search(t, upper_ident_re()))) {
+		size_t eq = t.find_first_of("=:");
+		if (eq != std::string::npos)
+			add_span(spans, eq + 1, t.size()); /* the value */
+		else
+			add_span(spans, 0, t.size()); /* can't isolate */
+	}
+
+	std::sort(spans.begin(), spans.end(),
+		  [](const Span &a, const Span &b) { return a.s < b.s; });
+	std::vector<Span> merged;
+	for (const auto &sp : spans) {
+		if (!merged.empty() && sp.s <= merged.back().e)
+			merged.back().e = std::max(merged.back().e, sp.e);
+		else
+			merged.push_back(sp);
+	}
+	return merged;
+}
+
 } // namespace
 
 std::vector<RectF> find_secret_boxes(const std::vector<OcrLine> &lines,
-				     uint32_t rule_mask)
+				     uint32_t rule_mask, bool per_word)
 {
 	std::vector<RectF> boxes;
 	for (const auto &line : lines) {
 		if (line.words.empty())
 			continue;
-		if (line_is_secret(line, rule_mask))
+
+		if (!per_word) {
+			if (line_is_secret(line, rule_mask))
+				boxes.push_back(line.box);
+			continue;
+		}
+
+		auto spans = secret_spans(line.text, rule_mask);
+		size_t L = line.text.size();
+		if (spans.empty())
+			continue;
+		if (L == 0) {
 			boxes.push_back(line.box);
+			continue;
+		}
+		for (const auto &sp : spans) {
+			RectF r = line.box;
+			r.x = line.box.x + (float)sp.s / L * line.box.w;
+			r.w = (float)(sp.e - sp.s) / L * line.box.w;
+			boxes.push_back(r);
+		}
 	}
 	return boxes;
 }

@@ -180,12 +180,16 @@ void Detector::run()
 			/* Pass the ORIGINAL image; the WinRT engine binarizes
 			 * internally, the ONNX engine wants the natural image.
 			 * ocr_bgra (binarized) is still used for extent growth. */
+			bool pw = per_word_.load();
 			auto lines = ocr_->recognize(bgra.data(), w, h, w * 4);
-			auto secret_boxes = find_secret_boxes(lines, mask);
-			/* Grow each match to the full text run on its row so values
-			 * OCR dropped are still covered. */
-			for (auto &b : secret_boxes)
-				b = expand_to_text_extent(b, ocr_bgra.data(), w, h);
+			auto secret_boxes = find_secret_boxes(lines, mask, pw);
+			/* Line mode: grow each match to the full text run on its row
+			 * so values OCR dropped are still covered. Per-word mode
+			 * keeps the precise token box (no expansion). */
+			if (!pw)
+				for (auto &b : secret_boxes)
+					b = expand_to_text_extent(b, ocr_bgra.data(),
+								  w, h);
 			det_boxes.insert(det_boxes.end(), secret_boxes.begin(),
 					 secret_boxes.end());
 		}

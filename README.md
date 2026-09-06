@@ -111,6 +111,8 @@ live):
 - **OCR engine** — Auto (GPU, else Windows) / GPU (ONNX·DirectML) / Windows OCR.
 - **Rule toggles** — API keys & tokens, password/secret/token lines, emails, QR
   codes.
+- **Per-word redaction** — cover only the secret token (e.g. hide the key value,
+  leave the label visible) instead of the whole line.
 
 ## Verification harness
 
@@ -126,7 +128,6 @@ travel — the cover tracks with near-zero leak).
 
 ## Roadmap
 
-- Per-word (vs per-line) redaction granularity.
 - Optional CUDA/TensorRT execution provider for the OCR models.
 
 ## License
