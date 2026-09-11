@@ -789,11 +789,10 @@ obs_source_info make_censr_filter_info()
 
 extern "C" void censr_register_filter(void)
 {
-	/* Restore + re-validate any saved license (config lives in the plugin's
-	 * config dir; censr-core is libobs-free so we hand it the path). */
-	char *cfg = obs_module_config_path("");
-	censr::license().load(cfg ? cfg : "");
-	bfree(cfg);
+	/* Restore + re-validate any saved license. Empty dir => censr-core's shared
+	 * per-user location, so activating in the plugin, the host, or a virtual
+	 * camera licenses the whole suite. */
+	censr::license().load("");
 
 	static obs_source_info censr_filter_info = make_censr_filter_info();
 	obs_register_source(&censr_filter_info);

@@ -128,6 +128,26 @@ long long json_int(const std::string &s, const std::string &key)
 	return v.empty() ? 0 : atoll(v.c_str());
 }
 
+/* A per-user dir shared by every Censr binary, so a key activated in one (the
+ * plugin, the host, a virtual camera) licenses the whole suite. */
+std::string default_config_dir()
+{
+#ifdef _WIN32
+	const char *base = getenv("APPDATA");
+	if (!base || !*base)
+		base = getenv("LOCALAPPDATA");
+	return (base && *base) ? (std::string(base) + "\\Censr") : "Censr";
+#elif defined(__APPLE__)
+	const char *home = getenv("HOME");
+	return (home && *home)
+		       ? (std::string(home) + "/Library/Application Support/Censr")
+		       : "Censr";
+#else
+	const char *home = getenv("HOME");
+	return (home && *home) ? (std::string(home) + "/.config/Censr") : "Censr";
+#endif
+}
+
 std::string trim(std::string v)
 {
 	while (!v.empty() && std::isspace((unsigned char)v.front()))
@@ -180,7 +200,7 @@ void License::load(const std::string &config_dir)
 	long long last = 0;
 	{
 		std::lock_guard<std::mutex> lk(mu_);
-		config_dir_ = config_dir;
+		config_dir_ = config_dir.empty() ? default_config_dir() : config_dir;
 	}
 
 	/* QA hook: CENSR_ACTIVATE_KEY forces an activation on load so the full
