@@ -35,6 +35,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 #include "censr_detector.h"
 #include "ocr_engine.h"
 #include "secret_rules.h"
+#include "license.h"
 #include "plugin-support.h"
 
 #define CENSR_FILTER_ID "censr_redaction"
@@ -60,6 +61,7 @@ static constexpr uint32_t CENSR_DEFAULT_COLOR = 255u | (191u << 8);
 #define S_RULE_EMAILS "rule_emails"
 #define S_RULE_QR "rule_qr"
 #define S_PER_WORD "per_word"
+#define S_LICENSE "license_key"
 
 namespace {
 
@@ -392,6 +394,51 @@ void draw_covers(censr_filter *filter, const std::vector<censr_box> &boxes)
 	gs_enable_framebuffer_srgb(prev_srgb);
 }
 
+/* Unlicensed watermark: a translucent amber badge in the bottom-right. Redaction
+ * still runs fully (we never leak a secret to sell); this only nags until a key is
+ * activated. Reuses the rounded-rect cover effect. */
+void draw_watermark(censr_filter *filter)
+{
+	if (!filter->round_effect) {
+		char *err = nullptr;
+		filter->round_effect =
+			gs_effect_create(CENSR_ROUND_EFFECT, "censr_round", &err);
+		if (err) {
+			obs_log(LOG_WARNING, "Censr round-rect effect error: %s", err);
+			bfree(err);
+		}
+		if (!filter->round_effect)
+			return;
+	}
+
+	const float W = 250.f, H = 40.f, M = 20.f;
+	float x = (float)filter->cx - W - M;
+	float y = (float)filter->cy - H - M;
+	if (x < 0.f)
+		x = 0.f;
+	if (y < 0.f)
+		y = 0.f;
+
+	gs_effect_t *eff = filter->round_effect;
+	struct vec4 col;
+	vec4_set(&col, 1.0f, 0.749f, 0.0f, 0.72f); /* amber, translucent */
+	struct vec2 sz;
+	vec2_set(&sz, W, H);
+	gs_effect_set_vec4(gs_effect_get_param_by_name(eff, "color"), &col);
+	gs_effect_set_vec2(gs_effect_get_param_by_name(eff, "box_size"), &sz);
+	gs_effect_set_float(gs_effect_get_param_by_name(eff, "radius"), 12.0f);
+
+	gs_blend_state_push();
+	gs_enable_blending(true);
+	gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
+	gs_matrix_push();
+	gs_matrix_translate3f(x, y, 0.0f);
+	while (gs_effect_loop(eff, "Draw"))
+		gs_draw_sprite(nullptr, 0, (uint32_t)W, (uint32_t)H);
+	gs_matrix_pop();
+	gs_blend_state_pop();
+}
+
 /* --- capture (into ring) + readback (for detection) ---------------------- */
 
 void capture_into(censr_filter *filter, FrameSlot &slot, obs_source_t *target,
@@ -505,6 +552,8 @@ void censr_video_render(void *data, gs_effect_t *effect)
 		} else {
 			draw_delayed_frame(disp, filter->cx, filter->cy);
 			draw_covers(filter, cov.boxes);
+			if (!censr::license().active())
+				draw_watermark(filter);
 		}
 	}
 
@@ -634,6 +683,22 @@ void censr_defaults(obs_data_t *s)
 	obs_data_set_default_bool(s, S_PER_WORD, false);
 }
 
+bool censr_activate_clicked(obs_properties_t *props, obs_property_t *property, void *data)
+{
+	UNUSED_PARAMETER(property);
+	auto *filter = static_cast<censr_filter *>(data);
+	if (filter && filter->context) {
+		obs_data_t *s = obs_source_get_settings(filter->context);
+		const char *key = obs_data_get_string(s, S_LICENSE);
+		censr::license().activate(key ? key : "");
+		obs_data_release(s);
+	}
+	obs_property_t *st = obs_properties_get(props, "license_status");
+	if (st)
+		obs_property_set_description(st, censr::license().status_text().c_str());
+	return true; /* refresh the panel so the status line updates */
+}
+
 obs_properties_t *censr_properties(void *data)
 {
 	UNUSED_PARAMETER(data);
@@ -669,6 +734,18 @@ obs_properties_t *censr_properties(void *data)
 		pw,
 		"Cover only the matched secret token instead of the whole line "
 		"(e.g. hide the key value but leave the label visible).");
+
+	/* --- License --------------------------------------------------------- */
+	obs_properties_add_text(p, S_LICENSE, "Censr license key", OBS_TEXT_DEFAULT);
+	obs_properties_add_button2(p, "activate_btn", "Activate license",
+				   censr_activate_clicked, data);
+	obs_property_t *lst = obs_properties_add_text(
+		p, "license_status", censr::license().status_text().c_str(),
+		OBS_TEXT_INFO);
+	obs_property_set_long_description(
+		lst,
+		"Redaction always runs. Without a valid license an amber badge shows on "
+		"your stream; activating a key removes it. Get a key at blackbeaconstudios.net.");
 
 	return p;
 }
@@ -712,6 +789,12 @@ obs_source_info make_censr_filter_info()
 
 extern "C" void censr_register_filter(void)
 {
+	/* Restore + re-validate any saved license (config lives in the plugin's
+	 * config dir; censr-core is libobs-free so we hand it the path). */
+	char *cfg = obs_module_config_path("");
+	censr::license().load(cfg ? cfg : "");
+	bfree(cfg);
+
 	static obs_source_info censr_filter_info = make_censr_filter_info();
 	obs_register_source(&censr_filter_info);
 	obs_log(LOG_INFO, "registered filter '%s' (Censr Redaction)", CENSR_FILTER_ID);

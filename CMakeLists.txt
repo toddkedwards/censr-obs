@@ -46,6 +46,7 @@ add_library(
   src/secret_rules.cpp
   src/qr_zxing.cpp
   src/censr_log.cpp
+  src/license.cpp
 )
 target_include_directories(censr-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set_target_properties(
@@ -59,10 +60,11 @@ set_target_properties(
 # Platform OCR backend: Windows.Media.Ocr (+ optional ONNX GPU OCR) on Windows,
 # Vision on macOS. All implement ICensrOcr; the rest of the pipeline is neutral.
 if(WIN32)
-  target_sources(censr-core PRIVATE src/ocr_winrt.cpp src/onnx_ocr.cpp)
+  target_sources(censr-core PRIVATE src/ocr_winrt.cpp src/onnx_ocr.cpp src/http_win.cpp)
+  target_link_libraries(censr-core PRIVATE winhttp)
 elseif(APPLE)
-  target_sources(censr-core PRIVATE src/ocr_vision.mm)
-  set_source_files_properties(src/ocr_vision.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  target_sources(censr-core PRIVATE src/ocr_vision.mm src/http_mac.mm)
+  set_source_files_properties(src/ocr_vision.mm src/http_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   target_link_libraries(
     censr-core
     PRIVATE "-framework Vision" "-framework CoreGraphics" "-framework Foundation"
